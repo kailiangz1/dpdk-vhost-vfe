@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/eventfd.h>
 
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
@@ -14,6 +15,7 @@
 #include <rte_vdpa.h>
 #include <rte_pci.h>
 #include <rte_string_fns.h>
+#include <rte_rpc.h>
 
 #include <cmdline_parse.h>
 #include <cmdline_socket.h>
@@ -21,8 +23,10 @@
 #include <cmdline_parse_num.h>
 #include <cmdline.h>
 
-#define MAX_PATH_LEN 128
-#define MAX_VDPA_SAMPLE_PORTS 1024
+#include "vdpa_rpc.h"
+
+static struct vdpa_rpc_context vdpa_rpc_ctx;
+
 #define RTE_LOGTYPE_VDPA RTE_LOGTYPE_USER1
 
 struct vdpa_port {
@@ -90,11 +94,6 @@ parse_args(int argc, char **argv)
 			vdpa_usage(prgname);
 			return -1;
 		}
-	}
-
-	if (iface[0] == '\0' && interactive == 0) {
-		vdpa_usage(prgname);
-		return -1;
 	}
 
 	return 0;
@@ -196,6 +195,31 @@ start_vdpa(struct vdpa_port *vport)
 		rte_exit(EXIT_FAILURE,
 			"start vhost driver failed: %s\n",
 			socket_path);
+	return 0;
+}
+
+int vdpa_with_socket_path_start(const char *vf_name)
+{
+	struct rte_vdpa_device *dev;
+	char ifname[MAX_PATH_LEN];
+
+	if (iface[0] == '\0')
+		/* Default socket path: /tmp/vf- */
+		snprintf(ifname, MAX_PATH_LEN,
+		"/tmp/vf-%s", vf_name);
+	else
+		snprintf(ifname, MAX_PATH_LEN,
+		"%s%s", iface, vf_name);
+	rte_strscpy(vports[devcnt].ifname, ifname, MAX_PATH_LEN);
+	dev = rte_vdpa_find_device_by_name(vf_name);
+	if (dev == NULL) {
+		RTE_LOG(ERR, VDPA, "Unable to find vdpa device id for %s.\n",
+		vf_name);
+		return -1;
+	}
+	vports[devcnt].dev = dev;
+	if (start_vdpa(&vports[devcnt]) == 0)
+		devcnt++;
 	return 0;
 }
 
@@ -529,6 +553,9 @@ main(int argc, char *argv[])
 	struct rte_device *dev;
 	struct rte_dev_iterator dev_iter;
 
+	ret = vdpa_rpc_start(&vdpa_rpc_ctx);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "rpc init failed\n");
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "eal init failed\n");
@@ -575,7 +602,7 @@ main(int argc, char *argv[])
 		}
 		vdpa_sample_quit();
 	}
-
+	vdpa_rpc_stop(&vdpa_rpc_ctx);
 	/* clean up the EAL */
 	rte_eal_cleanup();
 
