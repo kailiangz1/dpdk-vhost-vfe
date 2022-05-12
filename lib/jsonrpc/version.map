@@ -1,0 +1,14 @@
+DPDK_22 {
+	global:
+
+	jrpc_server_init;
+	jrpc_server_init_with_ev_loop;
+	jrpc_server_run;
+	jrpc_server_stop;
+	jrpc_server_destroy;
+	jrpc_register_procedure;
+	jrpc_deregister_procedure;
+	jsonrpc_client_call_method;
+
+	local: *;
+};
