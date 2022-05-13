@@ -8,6 +8,9 @@
 #define VIRTIO_ARG_VDPA_PF       "mipf"
 
 struct virtio_vdpa_pf_priv;
+struct virtadmin_ctl;
+struct virtio_admin_ctrl;
+struct virtio_admin_data_ctrl;
 
 struct virtio_vdpa_mi_ops {
 	struct virtio_vdpa_pf_priv *(*get_mi_by_bdf)(const char *bdf);
