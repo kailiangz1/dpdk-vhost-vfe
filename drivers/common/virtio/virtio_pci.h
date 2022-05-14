@@ -102,6 +102,78 @@ enum virtio_msix_status {
 	VIRTIO_MSIX_ENABLED = 2
 };
 
+/* PCI-specific Admin command set */
+#define VIRTIO_ADMIN_PCI_MIGRATION_CTRL 64
+#define VIRTIO_ADMIN_PCI_MIGRATION_IDENTITY 0
+#define VIRTIO_ADMIN_PCI_MIGRATION_GET_INTERNAL_STATUS 1
+#define VIRTIO_ADMIN_PCI_MIGRATION_MODIFY_INTERNAL_STATUS 2
+#define VIRTIO_ADMIN_PCI_MIGRATION_GET_INTERNAL_STATE_PENDING_BYTES 3
+#define VIRTIO_ADMIN_PCI_MIGRATION_SAVE_INTERNAL_STATE 4
+#define VIRTIO_ADMIN_PCI_MIGRATION_RESTORE_INTERNAL_STATE 5
+
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_TRACK_CTRL 65
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_IDENTITY 0
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_START_TRACK 1
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_STOP_TRACK 2
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_GET_MAP_PENDING_BYTES 3
+#define VIRTIO_ADMIN_PCI_DIRTY_PAGE_REPORT_MAP 4
+
+enum virtio_internal_status {
+	/* Reset occurred. The device is in initial status. aka FLR state */
+	VIRTIO_S_INIT = 0,
+	/* The device is running (unquiesced and unfreezed) */
+	VIRTIO_S_RUNNING = 1,
+	/*
+	* The device has been quiesced (Internal state can be changed.
+	* Can't master transactions.)
+	*/
+	VIRTIO_S_QUIESCED = 2,
+	/*
+	* The device has been freezed (Internal state can't be changed.
+	* Can't master transactions.)
+	*/
+	VIRTIO_S_FREEZED = 3,
+};
+
+struct virtio_admin_migration_get_internal_state_pending_bytes_data {
+	uint16_t vdev_id;
+	uint16_t reserved;
+};
+
+struct virtio_admin_migration_get_internal_state_pending_bytes_result {
+	uint64_t pending_bytes;
+};
+
+struct virtio_admin_migration_modify_internal_status_data {
+	uint16_t vdev_id;
+	uint16_t internal_status; /* Value from enum virtio_internal_status */
+};
+
+struct virtio_admin_migration_save_internal_state_data {
+	uint16_t vdev_id;
+	uint16_t reserved[3];
+	uint64_t offset;
+	uint64_t length; /* Num of data bytes to be returned by the device */
+};
+
+struct virtio_admin_migration_restore_internal_state_data {
+	uint16_t vdev_id;
+	uint16_t reserved;
+	uint64_t offset;
+	uint64_t length; /* Num of data bytes to be consumed by the device */
+	uint8_t data[];
+};
+
+struct virtio_admin_migration_get_internal_status_data {
+	uint16_t vdev_id;
+	uint16_t reserved;
+};
+
+struct virtio_admin_migration_get_internal_status_result {
+	uint16_t internal_status; /* Value from enum virtio_internal_status */
+	uint16_t reserved;
+};
+
 struct virtio_pci_dev {
 	struct virtio_hw hw;
 	struct virtio_pci_common_cfg *common_cfg;
