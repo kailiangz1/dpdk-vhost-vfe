@@ -23,6 +23,14 @@
 #define VIRTIO_ARG_VDPA_VALUE_VF "1"
 #define VIRTIO_ARG_VDPA_VALUE_PF "2"
 
+#define VIRTIO_ARG_VDPA_VFID "vfid"
+#define VIRTIO_ARG_VDPA_MSIX_NUM "msix_num"
+#define VIRTIO_ARG_VDPA_QUEUE_NUM "queue_num"
+#define VIRTIO_ARG_VDPA_QUEUE_SIZE "queue_size"
+#define VIRTIO_ARG_VDPA_FEATURES "features"
+#define VIRTIO_ARG_VDPA_MTU "mtu"
+#define VIRTIO_ARG_VDPA_MAC "mac"
+
 struct virtio_pci_dev_vring_info {
 	uint64_t desc;
 	uint64_t avail;
