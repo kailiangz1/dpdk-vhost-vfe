@@ -1072,6 +1072,53 @@ virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
 	return found ? 0 : -ENODEV;
 }
 
+void
+virtio_vdpa_get_vf_info(struct virtio_vdpa_priv *priv,
+		struct vdpa_vf_info_priv *vf_info)
+{
+	vf_info->vfid = priv->vid;
+	vf_info->pci_addr = priv->pdev->addr;
+	/* Todo */
+	vf_info->msix_num = 0;
+	vf_info->queue_num = priv->nr_virtqs;
+	vf_info->queue_size = 0;
+	vf_info->features = priv->guest_features;
+	vf_info->mtu = 0;
+	vf_info->mac;
+}
+
+bool
+is_mi_pf(struct virtio_vdpa_priv *priv, struct virtio_vdpa_pf_priv *pf_priv)
+{
+	return (priv->pf_priv == pf_priv);
+}
+
+int
+virtio_vdpa_dev_list_dump(void *buf, int max_count, void *filter,
+		vdpa_dump_func_t dump_func)
+{
+	struct virtio_vdpa_priv *priv;
+	char * tbuf = (char *)buf;
+	int len, count = 0;
+
+	if (!buf || !dump_func || !max_count)
+		return -EINVAL;
+
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
+		len = dump_func(priv, filter, tbuf);
+		if (len > 0) {
+			count++;
+			if (count >= max_count)
+				break;
+			tbuf += len;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+
+	return count;
+}
+
 /*
  * The set of PCI devices this driver supports
  */

@@ -1,6 +1,9 @@
 INTERNAL {
 	global:
 	virtio_vdpa_register_mi_ops;
+	virtio_vdpa_get_vf_info;
+	virtio_vdpa_dev_list_dump;
+	is_mi_pf;
 
 	local: *;
 };

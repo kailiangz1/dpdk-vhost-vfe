@@ -5,6 +5,21 @@
 #ifndef _VIRTIO_LM_H_
 #define _VIRTIO_LM_H_
 
+struct vdpa_pf_info_priv {
+	struct rte_pci_addr pci_addr;
+};
+
+struct vdpa_vf_info_priv {
+	struct rte_pci_addr pci_addr;
+	uint32_t vfid;
+	uint32_t msix_num;
+	uint32_t queue_num;
+	uint32_t queue_size;
+	uint64_t features;
+	uint32_t mtu;
+	struct rte_ether_addr mac;
+};
+
 struct virtio_vdpa_pf_priv;
 struct virtio_vdpa_priv;
 
@@ -63,5 +78,24 @@ struct virtio_vdpa_mi_ops {
 
 __rte_internal void
 virtio_vdpa_register_mi_ops(struct virtio_vdpa_mi_ops *ops);
+
+__rte_internal void
+virtio_vdpa_get_vf_info(struct virtio_vdpa_priv *priv,
+		struct vdpa_vf_info_priv *vf_info);
+
+__rte_internal bool
+is_mi_pf(struct virtio_vdpa_priv *priv, struct virtio_vdpa_pf_priv *pf_priv);
+
+/*
+ * Dump a vdpa device
+ * priv devic private data
+ * buf buffer of information required by caller
+ * return size of buffer consumed
+ */
+typedef int (*vdpa_dump_func_t)(void *priv, void *filter, void *buf);
+
+__rte_internal int
+virtio_vdpa_dev_list_dump(void *buf, int max_count, void *filter,
+		vdpa_dump_func_t dump_func);
 
 #endif /* _VIRTIO_LM_H_ */
