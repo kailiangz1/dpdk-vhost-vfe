@@ -15,6 +15,7 @@
 #include <rte_vfio.h>
 #include <rte_kvargs.h>
 #include <rte_eal_paging.h>
+#include <rte_rpc.h>
 
 #include <virtio_api.h>
 #include <virtqueue.h>
