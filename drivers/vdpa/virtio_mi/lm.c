@@ -79,6 +79,13 @@ virtio_vdpa_get_mi_by_bdf(const char *bdf)
 	return NULL;
 }
 
+void
+virtio_vdpa_get_pf_info(struct virtio_vdpa_pf_priv *priv,
+		struct vdpa_pf_info_priv *pf_info)
+{
+	pf_info->pci_addr = priv->pdev->addr;
+}
+
 static struct virtio_admin_ctrl *
 virtio_vdpa_send_admin_command_split(struct virtadmin_ctl *avq,
 		struct virtio_admin_ctrl *ctrl,
@@ -601,6 +608,32 @@ virtio_vdpa_admin_queue_alloc(struct virtio_vdpa_pf_priv *priv)
 	}
 
 	return 0;
+}
+
+int
+virtio_vdpa_mi_list_dump(void *buf, int max_count, void *filter,
+		vdpa_dump_func_t dump_func)
+{
+	struct virtio_vdpa_pf_priv *priv;
+	char * tbuf = (char *)buf;
+	int len, count = 0;
+
+	if (!buf || !dump_func || !max_count)
+		return -EINVAL;
+
+	pthread_mutex_lock(&mi_priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_mi_priv_list, next) {
+		len = dump_func(priv, filter, tbuf);
+		if (len > 0) {
+			count++;
+			if (count >= max_count)
+				break;
+			tbuf += len;
+		}
+	}
+	pthread_mutex_unlock(&mi_priv_list_lock);
+
+	return count;
 }
 
 static int vdpa_mi_check_handler(__rte_unused const char *key,

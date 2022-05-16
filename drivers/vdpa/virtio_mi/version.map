@@ -1,5 +1,8 @@
 INTERNAL {
 	global:
 	virtio_vdpa_get_mi_by_bdf;
+	virtio_vdpa_get_pf_info;
+	virtio_vdpa_mi_list_dump;
+
 	local: *;
 };
