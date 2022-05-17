@@ -13,7 +13,6 @@
 #include <rte_string_fns.h>
 #include <rte_bus_pci.h>
 #include <rte_vfio.h>
-#include <rte_vdpa.h>
 #include <rte_kvargs.h>
 #include <rte_eal_paging.h>
 
@@ -64,6 +63,214 @@ virtio_vdpa_get_mi_by_bdf(const char *bdf)
 	if (found)
 		return priv;
 	return NULL;
+}
+
+static void
+virtio_vdpa_init_vring(struct virtqueue *vq)
+{
+	uint8_t *ring_mem = vq->vq_ring_virt_mem;
+	int size = vq->vq_nentries;
+	struct vring *vr;
+
+	DRV_LOG(DEBUG, ">>");
+
+	memset(ring_mem, 0, vq->vq_ring_size);
+
+	vq->vq_used_cons_idx = 0;
+	vq->vq_desc_head_idx = 0;
+	vq->vq_avail_idx = 0;
+	vq->vq_desc_tail_idx = (uint16_t)(vq->vq_nentries - 1);
+	vq->vq_free_cnt = vq->vq_nentries;
+	memset(vq->vq_descx, 0, sizeof(struct vq_desc_extra) * vq->vq_nentries);
+	vr = &vq->vq_split.ring;
+
+	vring_init_split(vr, ring_mem, VIRTIO_VRING_ALIGN, size);
+	vring_desc_init_split(vr->desc, size);
+	/*
+	 * Disable device(host) interrupting guest
+	 */
+	virtqueue_disable_intr_split(vq);
+}
+
+static void
+virtio_vdpa_destroy_aq_ctl(struct virtadmin_ctl *ctl)
+{
+	rte_memzone_free(ctl->mz);
+	rte_memzone_free(ctl->virtio_admin_hdr_mz);
+}
+
+/* Todo: queue size */
+#define VPDA_ADMIN_QUEUE_SIZE			64
+static int
+virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv, uint16_t queue_idx)
+{
+	const struct rte_memzone *mz = NULL, *hdr_mz = NULL;
+	int numa_node = priv->pdev->device.numa_node;
+	unsigned int vq_size = VPDA_ADMIN_QUEUE_SIZE;
+	struct virtio_pci_dev *vpdev = priv->vpdev;
+	struct virtio_pci_dev_vring_info vr_info;
+	char vq_hdr_name[VIRTQUEUE_MAX_NAME_SZ];
+	char vq_name[VIRTQUEUE_MAX_NAME_SZ];
+	struct virtio_hw *hw = &vpdev->hw;
+	struct virtadmin_ctl *avq = NULL;
+	struct virtqueue *vq;
+	size_t sz_hdr_mz = 0;
+	unsigned int size;
+	int ret;
+
+	DRV_LOG(INFO, "setting up admin queue on NUMA node %d", numa_node);
+
+	snprintf(vq_name, sizeof(vq_name), "vdev%d_vq%u",
+		 vpdev->vfio_dev_fd, queue_idx);
+
+	size = RTE_ALIGN_CEIL(sizeof(*vq) +
+				vq_size * sizeof(struct vq_desc_extra),
+				RTE_CACHE_LINE_SIZE);
+	vq = rte_zmalloc_socket(vq_name, size, RTE_CACHE_LINE_SIZE,
+				numa_node);
+	if (vq == NULL) {
+		DRV_LOG(ERR, "can not allocate vq %u", queue_idx);
+		return -ENOMEM;
+	}
+	hw->vqs[queue_idx] = vq;
+
+	vq->hw = hw;
+	vq->vq_queue_index = queue_idx;
+	vq->vq_nentries = vq_size;
+
+	/*
+	 * Reserve a memzone for vring elements
+	 */
+	size = vring_size(hw, vq_size, VIRTIO_VRING_ALIGN);
+	vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_VRING_ALIGN);
+
+	mz = rte_memzone_reserve_aligned(vq_name, vq->vq_ring_size,
+			numa_node, RTE_MEMZONE_IOVA_CONTIG,
+			VIRTIO_VRING_ALIGN);
+	if (mz == NULL) {
+		if (rte_errno == EEXIST)
+			mz = rte_memzone_lookup(vq_name);
+		if (mz == NULL) {
+			ret = -ENOMEM;
+			goto err_ret;
+		}
+	}
+
+	memset(mz->addr, 0, mz->len);
+
+	vq->vq_ring_mem = mz->iova;
+	vq->vq_ring_virt_mem = mz->addr;
+
+	virtio_vdpa_init_vring(vq);
+
+
+	if (queue_idx == (priv->vpdev->common_cfg->num_queues - 1)) {
+		avq = &vq->aq;
+		avq->mz = mz;
+
+		/* Allocate a page for admin vq command, data and status */
+		sz_hdr_mz = rte_mem_page_size();
+		
+		if (sz_hdr_mz) {
+			snprintf(vq_hdr_name, sizeof(vq_hdr_name), "vdev%d_vq%u_hdr",
+					vpdev->vfio_dev_fd, queue_idx);
+			hdr_mz = rte_memzone_reserve_aligned(vq_hdr_name, sz_hdr_mz,
+					numa_node, RTE_MEMZONE_IOVA_CONTIG,
+					RTE_CACHE_LINE_SIZE);
+			if (hdr_mz == NULL) {
+				if (rte_errno == EEXIST)
+					hdr_mz = rte_memzone_lookup(vq_hdr_name);
+				if (hdr_mz == NULL) {
+					ret = -ENOMEM;
+					goto free_mz;
+				}
+			}
+			avq->virtio_admin_hdr_mz = hdr_mz;
+			avq->virtio_admin_hdr_mem = hdr_mz->iova;
+			memset(avq->virtio_admin_hdr_mz->addr, 0, rte_mem_page_size());
+		} else {
+			DRV_LOG(ERR, "rte mem page size is zero");
+		}
+
+		hw->avq = avq;
+	}
+
+	vr_info.size  = vq_size;
+	vr_info.desc  = (uint64_t)(uintptr_t)vq->vq_split.ring.desc;
+	vr_info.avail = (uint64_t)(uintptr_t)vq->vq_split.ring.avail;
+	vr_info.used  = (uint64_t)(uintptr_t)vq->vq_split.ring.used;
+	ret = virtio_pci_dev_queue_set(vpdev, queue_idx, &vr_info);
+	if (ret) {
+		DRV_LOG(ERR, "setup_queue %u failed", queue_idx);
+		ret = -EINVAL;
+		goto clean_vq;
+	}
+
+	return 0;
+
+clean_vq:
+	hw->avq = NULL;
+	rte_memzone_free(hdr_mz);
+free_mz:
+	rte_memzone_free(mz);
+err_ret:
+	return ret;
+}
+
+static void
+virtio_vdpa_admin_queue_free(struct virtio_vdpa_pf_priv *priv)
+{
+	uint16_t nr_vq = priv->hw_nr_virtqs;
+	struct virtio_hw *hw = &priv->vpdev->hw;
+	struct virtqueue *vq;
+	uint16_t i;
+
+	if (hw->vqs == NULL)
+		return;
+
+	if (hw->avq) {
+		virtio_vdpa_destroy_aq_ctl(hw->avq);
+		hw->avq = NULL;
+	}
+
+	for (i = 0; i < nr_vq; i++) {
+		vq = hw->vqs[i];
+		if (vq) {
+			rte_free(vq);
+			hw->vqs[i] = NULL;
+		}
+	}
+	rte_free(hw->vqs);
+	hw->vqs = NULL;
+}
+
+static int
+virtio_vdpa_admin_queue_alloc(struct virtio_vdpa_pf_priv *priv)
+{
+	struct virtio_hw *hw = &priv->vpdev->hw;
+	uint16_t i, queue_idx;
+	int ret;
+
+	hw->max_queue_pairs = priv->vpdev->common_cfg->num_queues / 2;
+	priv->hw_nr_virtqs = 1;
+	hw->vqs = rte_zmalloc(NULL, sizeof(struct virtqueue *) * priv->hw_nr_virtqs, 0);
+	if (!hw->vqs) {
+		DRV_LOG(ERR, "failed to allocate vqs");
+		return -ENOMEM;
+	}
+
+	queue_idx = priv->vpdev->common_cfg->num_queues - 1;
+	for (i = 0; i < priv->hw_nr_virtqs; i++) {
+		ret = virtio_vdpa_init_admin_queue(priv, queue_idx);
+		if (ret < 0) {
+			DRV_LOG(ERR, "Failed to init virtio device queue %u", queue_idx);
+			virtio_vdpa_admin_queue_free(priv);
+			return ret;
+		}
+		queue_idx--;
+	}
+
+	return 0;
 }
 
 static int vdpa_mi_check_handler(__rte_unused const char *key,
@@ -165,6 +372,13 @@ virtio_vdpa_mi_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	priv->vpdev->hw.weak_barriers = !virtio_with_feature(&priv->vpdev->hw, VIRTIO_F_ORDER_PLATFORM);
 	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_FEATURES_OK);
 
+	ret = virtio_vdpa_admin_queue_alloc(priv);
+	if (ret) {
+		DRV_LOG(ERR, "Failed to alloc vDPA device admin queue");
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
 	/* Start the device */
 	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_DRIVER_OK);
 
@@ -195,6 +409,7 @@ virtio_vdpa_mi_dev_remove(struct rte_pci_device *pci_dev)
 	pthread_mutex_unlock(&mi_priv_list_lock);
 
 	if (found) {
+		virtio_vdpa_admin_queue_free(priv);
 		virtio_pci_dev_reset(priv->vpdev);
 
 		/* Tell the host we've noticed this device. */
