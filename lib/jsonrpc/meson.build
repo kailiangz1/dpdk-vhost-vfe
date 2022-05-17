@@ -7,6 +7,6 @@ if has_libev == 0
 	subdir_done()
 endif
 
-sources = files('cJSON.c', 'jsonrpc-c.c', 'jsonrpc-client.c')
-headers = files('cJSON.h', 'jsonrpc-c.h', 'jsonrpc-client.h')
+sources = files('cJSON.c', 'jsonrpc-c.c', 'jsonrpc-client.c', 'rte_rpc.c')
+headers = files('cJSON.h', 'jsonrpc-c.h', 'jsonrpc-client.h', 'rte_rpc.h')
 deps += ['ethdev']
