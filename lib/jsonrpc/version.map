@@ -9,6 +9,7 @@ DPDK_22 {
 	jrpc_register_procedure;
 	jrpc_deregister_procedure;
 	jsonrpc_client_call_method;
+	rte_rpc_vdpa_global_ops_init;
 
 	local: *;
 };
