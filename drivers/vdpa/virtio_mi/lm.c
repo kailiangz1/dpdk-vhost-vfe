@@ -46,6 +46,11 @@ RTE_LOG_REGISTER(virtio_vdpa_mi_logtype, pmd.vdpa.virtio, NOTICE);
 	rte_log(RTE_LOG_ ## level, virtio_vdpa_mi_logtype, \
 		"VIRTIO VDPA MI %s(): " fmt "\n", __func__, ##args)
 
+RTE_LOG_REGISTER(virtio_vdpa_cmd_logtype, pmd.vdpa.virtio, NOTICE);
+#define CMD_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, virtio_vdpa_cmd_logtype, \
+		"VIRTIO VDPA CMD %s(): " fmt "\n", __func__, ##args)
+
 TAILQ_HEAD(virtio_vdpa_mi_privs, virtio_vdpa_pf_priv) virtio_mi_priv_list =
 						TAILQ_HEAD_INITIALIZER(virtio_mi_priv_list);
 static pthread_mutex_t mi_priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -208,6 +213,186 @@ virtio_vdpa_send_admin_command(struct virtadmin_ctl *avq,
 
 	rte_spinlock_unlock(&avq->lock);
 	return result->status;
+}
+
+static int
+virtio_vdpa_cmd_set_status(struct virtio_hw *hw, int vdev_id,
+		enum virtio_internal_status status)
+{
+	struct virtio_admin_migration_modify_internal_status_data *sd;
+	struct virtio_admin_data_ctrl dat_ctrl;
+	struct virtio_admin_ctrl *ctrl;
+	int dlen[1];
+	int ret;
+
+	ctrl = virtnet_get_aq_hdr_addr(hw->avq);
+	ctrl->hdr.class = VIRTIO_ADMIN_PCI_MIGRATION_CTRL;
+	ctrl->hdr.cmd = VIRTIO_ADMIN_PCI_MIGRATION_MODIFY_INTERNAL_STATUS;
+	sd = (struct virtio_admin_migration_modify_internal_status_data *)&ctrl->data[0];
+	sd->vdev_id = rte_cpu_to_le_16(vdev_id);
+	sd->internal_status = rte_cpu_to_le_16((uint16_t)status);
+	dlen[0] = sizeof(*sd);
+	dat_ctrl.have_in_data = false;
+	dat_ctrl.have_out_data = false;
+
+	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, 1);
+	if (ret) {
+		CMD_LOG(ERR, "Failed to change device %u status to %d, cmd status %d",
+				vdev_id, status, ret);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
+static int
+virtio_vdpa_cmd_resume(struct virtio_vdpa_pf_priv *priv, int vdev_id,
+		enum virtio_internal_status status)
+{
+	struct virtio_hw *hw = &priv->vpdev->hw;
+
+	if (status != VIRTIO_S_QUIESCED && status != VIRTIO_S_RUNNING)
+		return -EINVAL;
+
+	if (!virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ)) {
+		CMD_LOG(INFO, "host does not support admin queue");
+		return -ENOTSUP;
+	}
+
+	return virtio_vdpa_cmd_set_status(hw, vdev_id, status);
+}
+
+static int
+virtio_vdpa_cmd_suspend(struct virtio_vdpa_pf_priv *priv, int vdev_id,
+		enum virtio_internal_status status)
+{
+	struct virtio_hw *hw = &priv->vpdev->hw;
+
+	if (status != VIRTIO_S_QUIESCED && status != VIRTIO_S_FREEZED)
+		return -EINVAL;
+
+	if (!virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ)) {
+		CMD_LOG(INFO, "host does not support admin queue");
+		return -ENOTSUP;
+	}
+
+	return virtio_vdpa_cmd_set_status(hw, vdev_id, status);
+}
+
+static int
+virtio_vdpa_cmd_save_state(struct virtio_vdpa_pf_priv *priv,
+		uint16_t vdev_id, uint64_t offset, uint64_t length,
+		rte_iova_t out_data, uint64_t out_data_len)
+{
+	struct virtio_admin_migration_save_internal_state_data *sd;
+	struct virtio_hw *hw = &priv->vpdev->hw;
+	struct virtio_admin_data_ctrl dat_ctrl;
+	struct virtio_admin_ctrl *ctrl;
+	int dlen[1];
+	int ret;
+
+	if (!virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ)) {
+		CMD_LOG(INFO, "host does not support admin queue");
+		return -ENOTSUP;
+	}
+
+	ctrl = virtnet_get_aq_hdr_addr(hw->avq);
+	ctrl->hdr.class = VIRTIO_ADMIN_PCI_MIGRATION_CTRL;
+	ctrl->hdr.cmd = VIRTIO_ADMIN_PCI_MIGRATION_SAVE_INTERNAL_STATE;
+	sd = (struct virtio_admin_migration_save_internal_state_data *)&ctrl->data[0];
+	sd->vdev_id = rte_cpu_to_le_16(vdev_id);
+	sd->offset = rte_cpu_to_le_64(offset);
+	sd->length = rte_cpu_to_le_64(length);
+	dlen[0] = sizeof(*sd);
+	dat_ctrl.have_in_data = false;
+	dat_ctrl.have_out_data = true;
+	dat_ctrl.out_data = out_data;
+	dat_ctrl.out_data_len = out_data_len;
+	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, 1);
+	if (ret) {
+		CMD_LOG(ERR, "Failed to save device %u state, cmd status %d",
+				vdev_id, ret);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
+static int
+virtio_vdpa_cmd_restore_state(struct virtio_vdpa_pf_priv *priv,
+		uint16_t vdev_id, uint64_t offset, uint64_t length,
+		rte_iova_t data)
+{
+	struct virtio_admin_migration_restore_internal_state_data *sd;
+	struct virtio_hw *hw = &priv->vpdev->hw;
+	struct virtio_admin_data_ctrl dat_ctrl;
+	struct virtio_admin_ctrl *ctrl;
+	int dlen[1];
+	int ret;
+
+	if (!virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ)) {
+		CMD_LOG(INFO, "host does not support admin queue");
+		return -ENOTSUP;
+	}
+
+	ctrl = virtnet_get_aq_hdr_addr(hw->avq);
+	ctrl->hdr.class = VIRTIO_ADMIN_PCI_MIGRATION_CTRL;
+	ctrl->hdr.cmd = VIRTIO_ADMIN_PCI_MIGRATION_RESTORE_INTERNAL_STATE;
+	sd = (struct virtio_admin_migration_restore_internal_state_data *)&ctrl->data[0];
+	sd->vdev_id = rte_cpu_to_le_16(vdev_id);
+	sd->offset = rte_cpu_to_le_64(offset);
+	sd->length = rte_cpu_to_le_64(length);
+	dlen[0] = sizeof(*sd);
+	dat_ctrl.have_in_data = true;
+	dat_ctrl.have_out_data = false;
+	dat_ctrl.in_data = data;
+	dat_ctrl.in_data_len = length;
+	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, 1);
+	if (ret) {
+		CMD_LOG(ERR, "Failed to save device %u state, cmd status %d",
+				vdev_id, ret);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
+static int
+virtio_vdpa_cmd_get_pending_bytes(struct virtio_vdpa_pf_priv *priv,
+		int vdev_id,
+		rte_iova_t pending_bytes)
+{
+	struct virtio_admin_migration_get_internal_state_pending_bytes_data *sd;
+	struct virtio_hw *hw = &priv->vpdev->hw;
+	struct virtio_admin_data_ctrl dat_ctrl;
+	struct virtio_admin_ctrl *ctrl;
+	int dlen[1];
+	int ret;
+
+	if (!virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ)) {
+		CMD_LOG(INFO, "host does not support admin queue");
+		return -ENOTSUP;
+	}
+
+	ctrl = virtnet_get_aq_hdr_addr(hw->avq);
+	ctrl->hdr.class = VIRTIO_ADMIN_PCI_MIGRATION_CTRL;
+	ctrl->hdr.cmd = VIRTIO_ADMIN_PCI_MIGRATION_GET_INTERNAL_STATE_PENDING_BYTES;
+	sd = (struct virtio_admin_migration_get_internal_state_pending_bytes_data *)&ctrl->data[0];
+	sd->vdev_id = rte_cpu_to_le_16(vdev_id);
+	dlen[0] = sizeof(*sd);
+
+	dat_ctrl.have_in_data = false;
+	dat_ctrl.have_out_data = true;
+	dat_ctrl.out_data = pending_bytes;
+	dat_ctrl.out_data_len = sizeof(uint64_t);
+	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, 1);
+	if (ret) {
+		CMD_LOG(ERR, "Failed to get pending bytes for vdev %u, cmd status %d",
+				vdev_id, ret);
+		return -EAGAIN;
+	}
+
+	return 0;
 }
 
 static void
@@ -572,6 +757,11 @@ RTE_INIT(virtio_vdpa_mi_init)
 {
 	struct virtio_vdpa_mi_ops mi_ops = {
 		.get_mi_by_bdf = virtio_vdpa_get_mi_by_bdf,
+		.lm_cmd_resume = virtio_vdpa_cmd_resume,
+		.lm_cmd_suspend = virtio_vdpa_cmd_suspend,
+		.lm_cmd_save_state = virtio_vdpa_cmd_save_state,
+		.lm_cmd_restore_state = virtio_vdpa_cmd_restore_state,
+		.lm_cmd_get_pending_bytes = virtio_vdpa_cmd_get_pending_bytes,
 	};
 	virtio_vdpa_register_mi_ops(&mi_ops);
 }
