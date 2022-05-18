@@ -11,6 +11,7 @@
 #include <rte_kvargs.h>
 
 #include <virtio_api.h>
+#include <virtio_lm.h>
 
 enum {
 	VIRTIO_VDPA_NOTIFIER_STATE_DISABLED,
@@ -71,6 +72,26 @@ RTE_LOG_REGISTER(virtio_vdpa_logtype, pmd.vdpa.virtio, NOTICE);
 static TAILQ_HEAD(virtio_vdpa_privs, virtio_vdpa_priv) virtio_priv_list =
 						  TAILQ_HEAD_INITIALIZER(virtio_priv_list);
 static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct virtio_vdpa_mi_ops mi_ops = {
+	.lm_cmd_identity = NULL,
+	.lm_cmd_resume = NULL,
+	.lm_cmd_suspend = NULL,
+	.lm_cmd_save_state = NULL,
+	.lm_cmd_restore_state = NULL,
+	.lm_cmd_get_internal_pending_bytes = NULL,
+	.lm_cmd_dirty_page_identity = NULL,
+	.lm_cmd_dirty_page_start_track = NULL,
+	.lm_cmd_dirty_page_stop_track = NULL,
+	.lm_cmd_dirty_page_get_map_pending_bytes = NULL,
+	.lm_cmd_dirty_page_report_map = NULL,
+};
+
+void
+virtio_vdpa_register_mi_ops(struct virtio_vdpa_mi_ops *ops)
+{
+	mi_ops = (*ops);
+}
 
 static struct virtio_vdpa_priv *
 virtio_vdpa_find_priv_resource_by_vdev(const struct rte_vdpa_device *vdev)
