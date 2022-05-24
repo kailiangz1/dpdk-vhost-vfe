@@ -1,6 +1,5 @@
 INTERNAL {
 	global:
-	virtio_vdpa_register_mi_ops;
-
+	virtio_vdpa_get_mi_by_bdf;
 	local: *;
 };

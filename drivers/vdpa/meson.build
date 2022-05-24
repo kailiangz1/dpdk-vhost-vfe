@@ -10,6 +10,7 @@ drivers = [
         'mlx5',
         'sfc',
         'virtio',
+        'virtio_mi',
 ]
 std_deps = ['bus_pci', 'kvargs']
 std_deps += ['vhost']

@@ -11,6 +11,7 @@
 #include <rte_kvargs.h>
 
 #include <virtio_api.h>
+#include <virtio_lm.h>
 
 enum {
 	VIRTIO_VDPA_NOTIFIER_STATE_DISABLED,
@@ -45,6 +46,7 @@ struct virtio_vdpa_vring_info {
  */
 struct virtio_vdpa_priv {
 	TAILQ_ENTRY(virtio_vdpa_priv) next;
+	struct virtio_vdpa_pf_priv *pf_priv;
 	struct rte_pci_device *pdev;
 	struct rte_vdpa_device *vdev;
 	struct virtio_pci_dev *vpdev;
@@ -62,6 +64,7 @@ struct virtio_vdpa_priv {
 
 #define VIRTIO_VDPA_INTR_RETRIES_USEC 1000
 #define VIRTIO_VDPA_INTR_RETRIES 256
+#include <virtio_lm.h>
 
 RTE_LOG_REGISTER(virtio_vdpa_logtype, pmd.vdpa.virtio, NOTICE);
 #define DRV_LOG(level, fmt, args...) \
@@ -71,6 +74,16 @@ RTE_LOG_REGISTER(virtio_vdpa_logtype, pmd.vdpa.virtio, NOTICE);
 static TAILQ_HEAD(virtio_vdpa_privs, virtio_vdpa_priv) virtio_priv_list =
 						  TAILQ_HEAD_INITIALIZER(virtio_priv_list);
 static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct virtio_vdpa_mi_ops mi_ops = {
+	.get_mi_by_bdf = NULL,
+};
+
+void
+virtio_vdpa_register_mi_ops(struct virtio_vdpa_mi_ops *ops)
+{
+	mi_ops = (*ops);
+}
 
 static struct virtio_vdpa_priv *
 virtio_vdpa_find_priv_resource_by_vdev(const struct rte_vdpa_device *vdev)
@@ -776,10 +789,21 @@ static int vdpa_check_handler(__rte_unused const char *key,
 	return 0;
 }
 
+static int vdpa_pf_check_handler(__rte_unused const char *key,
+		const char *value, void *ret_val)
+{
+	if (mi_ops.get_mi_by_bdf)
+		*(struct virtio_vdpa_pf_priv **)ret_val = mi_ops.get_mi_by_bdf(value);
+	else
+		*(struct virtio_vdpa_pf_priv **)ret_val = NULL;
+
+	return 0;
+}
+
 #define VIRTIO_ARG_VDPA "vdpa"
 
 static int
-virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa)
+virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa, struct virtio_vdpa_pf_priv **pf)
 {
 	struct rte_kvargs *kvlist;
 	int ret = 0;
@@ -801,6 +825,16 @@ virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa)
 				vdpa_check_handler, vdpa);
 		if (ret < 0)
 			DRV_LOG(ERR, "Failed to parse %s", VIRTIO_ARG_VDPA);
+	}
+
+	if (rte_kvargs_count(kvlist, VIRTIO_ARG_VDPA_PF) == 1) {
+		/* vdpa pf set when there's a key-value pair:
+		 * mipf=0000:3b:0.0
+		 */
+		ret = rte_kvargs_process(kvlist, VIRTIO_ARG_VDPA_PF,
+				vdpa_pf_check_handler, pf);
+		if (ret < 0)
+			DRV_LOG(ERR, "Failed to parse %s", VIRTIO_ARG_VDPA_PF);
 	}
 
 	rte_kvargs_free(kvlist);
@@ -875,12 +909,13 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	int vdpa = 0;
 	int ret;
 	struct virtio_vdpa_priv *priv;
+	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
 	int iommu_group_num;
 
 	rte_pci_device_name(&pci_dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
 
-	ret = virtio_pci_devargs_parse(pci_dev->device.devargs, &vdpa);
+	ret = virtio_pci_devargs_parse(pci_dev->device.devargs, &vdpa, &pf_priv);
 	if (ret < 0) {
 		DRV_LOG(ERR, "Devargs parsing is failed %d dev:%s", ret, devname);
 		return ret;
@@ -898,6 +933,10 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		return -rte_errno;
 	}
 
+	/* check pf_priv before use it, might be null if not set */
+	priv->pf_priv = pf_priv;
+	if (!priv->pf_priv)
+		DRV_LOG(WARNING, "PF was not set");
 	/* TO_DO: need to confirm following: */
 	priv->vfio_dev_fd = -1;
 	priv->vfio_group_fd = -1;
