@@ -22,7 +22,10 @@
 #include <virtio_admin.h>
 #include <virtio_lm.h>
 
-#define VIRTIO_VDPA_MI_SUPPORTED_FEATURE (1ULL << VIRTIO_F_ADMIN_VQ)
+#define VIRTIO_VDPA_MI_SUPPORTED_FEATURE ((1ULL << VIRTIO_NET_F_CTRL_VQ) | \
+				(1ULL << VIRTIO_NET_F_CTRL_RX) | \
+				(1ULL << VIRTIO_NET_F_MQ) | \
+				(1ULL <<VIRTIO_F_ADMIN_VQ))
 
 struct virtio_vdpa_pf_priv {
 	TAILQ_ENTRY(virtio_vdpa_pf_priv) next;
@@ -431,6 +434,13 @@ virtio_vdpa_init_vring(struct virtqueue *vq)
 }
 
 static void
+virtio_vdpa_destroy_cq_ctl(struct virtnet_ctl *ctl)
+{
+	rte_memzone_free(ctl->mz);
+	rte_memzone_free(ctl->virtio_net_hdr_mz);
+}
+
+static void
 virtio_vdpa_destroy_aq_ctl(struct virtadmin_ctl *ctl)
 {
 	rte_memzone_free(ctl->mz);
@@ -451,6 +461,7 @@ virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv, uint16_t queue_id
 	char vq_name[VIRTQUEUE_MAX_NAME_SZ];
 	struct virtio_hw *hw = &vpdev->hw;
 	struct virtadmin_ctl *avq = NULL;
+	struct virtnet_ctl *cvq = NULL;
 	struct virtqueue *vq;
 	size_t sz_hdr_mz = 0;
 	unsigned int size;
@@ -464,6 +475,9 @@ virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv, uint16_t queue_id
 	size = RTE_ALIGN_CEIL(sizeof(*vq) +
 				vq_size * sizeof(struct vq_desc_extra),
 				RTE_CACHE_LINE_SIZE);
+	/* Allocate a page for admin vq command, data and status */
+	sz_hdr_mz = rte_mem_page_size();
+
 	vq = rte_zmalloc_socket(vq_name, size, RTE_CACHE_LINE_SIZE,
 				numa_node);
 	if (vq == NULL) {
@@ -501,34 +515,36 @@ virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv, uint16_t queue_id
 
 	virtio_vdpa_init_vring(vq);
 
+	if (sz_hdr_mz) {
+		snprintf(vq_hdr_name, sizeof(vq_hdr_name), "vdev%d_vq%u_hdr",
+				vpdev->vfio_dev_fd, queue_idx);
+		hdr_mz = rte_memzone_reserve_aligned(vq_hdr_name, sz_hdr_mz,
+				numa_node, RTE_MEMZONE_IOVA_CONTIG,
+				RTE_CACHE_LINE_SIZE);
+		if (hdr_mz == NULL) {
+			if (rte_errno == EEXIST)
+				hdr_mz = rte_memzone_lookup(vq_hdr_name);
+			if (hdr_mz == NULL) {
+				ret = -ENOMEM;
+				goto free_mz;
+			}
+		}
+	}
 
-	if (queue_idx == (priv->vpdev->common_cfg->num_queues - 1)) {
+	if (queue_idx == ((hw->max_queue_pairs * 2 - 1) & (~1U))) {
+		cvq = &vq->cq;
+		cvq->mz = mz;
+		cvq->virtio_net_hdr_mz = hdr_mz;
+		cvq->virtio_net_hdr_mem = hdr_mz->iova;
+		memset(cvq->virtio_net_hdr_mz->addr, 0, rte_mem_page_size());
+
+		hw->cvq = cvq;
+	} else if (queue_idx == (hw->max_queue_pairs * 2 - 1)) {
 		avq = &vq->aq;
 		avq->mz = mz;
-
-		/* Allocate a page for admin vq command, data and status */
-		sz_hdr_mz = rte_mem_page_size();
-		
-		if (sz_hdr_mz) {
-			snprintf(vq_hdr_name, sizeof(vq_hdr_name), "vdev%d_vq%u_hdr",
-					vpdev->vfio_dev_fd, queue_idx);
-			hdr_mz = rte_memzone_reserve_aligned(vq_hdr_name, sz_hdr_mz,
-					numa_node, RTE_MEMZONE_IOVA_CONTIG,
-					RTE_CACHE_LINE_SIZE);
-			if (hdr_mz == NULL) {
-				if (rte_errno == EEXIST)
-					hdr_mz = rte_memzone_lookup(vq_hdr_name);
-				if (hdr_mz == NULL) {
-					ret = -ENOMEM;
-					goto free_mz;
-				}
-			}
-			avq->virtio_admin_hdr_mz = hdr_mz;
-			avq->virtio_admin_hdr_mem = hdr_mz->iova;
-			memset(avq->virtio_admin_hdr_mz->addr, 0, rte_mem_page_size());
-		} else {
-			DRV_LOG(ERR, "rte mem page size is zero");
-		}
+		avq->virtio_admin_hdr_mz = hdr_mz;
+		avq->virtio_admin_hdr_mem = hdr_mz->iova;
+		memset(avq->virtio_admin_hdr_mz->addr, 0, rte_mem_page_size());
 
 		hw->avq = avq;
 	}
@@ -571,6 +587,11 @@ virtio_vdpa_admin_queue_free(struct virtio_vdpa_pf_priv *priv)
 		hw->avq = NULL;
 	}
 
+	if (hw->cvq) {
+		virtio_vdpa_destroy_cq_ctl(hw->cvq);
+		hw->cvq = NULL;
+	}
+
 	for (i = 0; i < nr_vq; i++) {
 		vq = hw->vqs[i];
 		if (vq) {
@@ -590,15 +611,31 @@ virtio_vdpa_admin_queue_alloc(struct virtio_vdpa_pf_priv *priv)
 	int ret;
 
 	hw->max_queue_pairs = priv->vpdev->common_cfg->num_queues / 2;
-	priv->hw_nr_virtqs = 1;
+	priv->hw_nr_virtqs = hw->max_queue_pairs * 2 + 1 + 1;
 	hw->vqs = rte_zmalloc(NULL, sizeof(struct virtqueue *) * priv->hw_nr_virtqs, 0);
 	if (!hw->vqs) {
 		DRV_LOG(ERR, "failed to allocate vqs");
 		return -ENOMEM;
 	}
 
+	queue_idx = 0;
+	ret = virtio_vdpa_init_admin_queue(priv, queue_idx);
+	if (ret < 0) {
+		DRV_LOG(ERR, "Failed to init virtio device queue %u", queue_idx);
+		virtio_vdpa_admin_queue_free(priv);
+		return ret;
+	}
+
+	queue_idx = 1;
+	ret = virtio_vdpa_init_admin_queue(priv, queue_idx);
+	if (ret < 0) {
+		DRV_LOG(ERR, "Failed to init virtio device queue %u", queue_idx);
+		virtio_vdpa_admin_queue_free(priv);
+		return ret;
+	}
+
 	queue_idx = priv->vpdev->common_cfg->num_queues - 1;
-	for (i = 0; i < priv->hw_nr_virtqs; i++) {
+	for (i = 0; i < 2; i++) {
 		ret = virtio_vdpa_init_admin_queue(priv, queue_idx);
 		if (ret < 0) {
 			DRV_LOG(ERR, "Failed to init virtio device queue %u", queue_idx);
