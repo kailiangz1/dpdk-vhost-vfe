@@ -9,6 +9,7 @@ struct virtio_vdpa_pf_priv;
 struct virtio_vdpa_priv;
 
 struct virtio_vdpa_mi_ops {
+	struct virtio_vdpa_pf_priv *(*get_mi_by_bdf)(const char *bdf);
 
 	int (*lm_cmd_identity)(struct virtio_vdpa_pf_priv *priv,
 			struct virtio_admin_migration_identity_result *result);

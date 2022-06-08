@@ -68,6 +68,30 @@ TAILQ_HEAD(virtio_vdpa_mi_privs, virtio_vdpa_pf_priv) virtio_mi_priv_list =
 						TAILQ_HEAD_INITIALIZER(virtio_mi_priv_list);
 static pthread_mutex_t mi_priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static struct virtio_vdpa_pf_priv *
+virtio_vdpa_get_mi_by_bdf(const char *bdf)
+{
+	struct virtio_vdpa_pf_priv *priv;
+	struct rte_pci_addr dev_addr;
+	int found = 0;
+
+	if (rte_pci_addr_parse(bdf, &dev_addr))
+		return NULL;
+
+	pthread_mutex_lock(&mi_priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_mi_priv_list, next) {
+		if (!rte_pci_addr_cmp(&priv->pdev->addr, &dev_addr)) {
+			found = 1;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&mi_priv_list_lock);
+
+	if (found)
+		return priv;
+	return NULL;
+}
+
 static struct virtio_admin_ctrl *
 virtio_vdpa_send_admin_command_split(struct virtadmin_ctl *avq,
 		struct virtio_admin_ctrl *ctrl,
@@ -1049,6 +1073,7 @@ virtio_vdpa_mi_dev_remove(struct rte_pci_device *pci_dev)
 RTE_INIT(virtio_vdpa_mi_init)
 {
 	struct virtio_vdpa_mi_ops mi_ops = {
+		.get_mi_by_bdf = virtio_vdpa_get_mi_by_bdf,
 		.lm_cmd_identity = virtio_vdpa_cmd_identity,
 		.lm_cmd_resume = virtio_vdpa_cmd_resume,
 		.lm_cmd_suspend = virtio_vdpa_cmd_suspend,

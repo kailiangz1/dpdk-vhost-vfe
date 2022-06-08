@@ -19,6 +19,7 @@
 #define VIRTIO_CONFIG_STATUS_FAILED		0x80
 
 #define VIRTIO_ARG_VDPA "vdpa"
+#define VIRTIO_ARG_VDPA_PF "mipf"
 #define VIRTIO_ARG_VDPA_VALUE_VF "1"
 #define VIRTIO_ARG_VDPA_VALUE_PF "2"
 
