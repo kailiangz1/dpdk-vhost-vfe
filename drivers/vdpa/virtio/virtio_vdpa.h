@@ -31,6 +31,7 @@ struct virtio_vdpa_device_callback {
 
 struct virtio_vdpa_priv {
 	TAILQ_ENTRY(virtio_vdpa_priv) next;
+	struct virtio_vdpa_pf_priv *pf_priv;
 	struct rte_pci_device *pdev;
 	struct rte_vdpa_device *vdev;
 	struct virtio_pci_dev *vpdev;
