@@ -167,6 +167,7 @@ start_vdpa(struct vdpa_port *vport)
 {
 	int ret;
 	char *socket_path = vport->ifname;
+	uint64_t features;
 
 	if (client_mode)
 		vport->flags |= RTE_VHOST_USER_CLIENT;
@@ -181,6 +182,19 @@ start_vdpa(struct vdpa_port *vport)
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE,
 			"register driver failed: %s\n",
+			socket_path);
+
+	/* vdpa device should get feature from device and not use builtin_net_driver */
+	ret = rte_vdpa_get_features(vport->dev, &features);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"get vdpa feature fail: %s\n",
+			socket_path);
+
+	ret = rte_vhost_driver_set_features(socket_path, features);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"set feature failed: %s\n",
 			socket_path);
 
 	ret = rte_vhost_driver_callback_register(socket_path,
