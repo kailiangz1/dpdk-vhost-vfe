@@ -11,6 +11,13 @@ if not is_linux
     subdir_done()
 endif
 
+# Depends on libuuid
+if has_libuuid == 0
+    build = false
+    reason = 'missing dependency, "libuuid"'
+    subdir_done()
+endif
+
 deps += ['vhost', 'jsonrpc']
 allow_experimental_apis = true
 sources = files(
