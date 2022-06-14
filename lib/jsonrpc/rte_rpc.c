@@ -92,3 +92,14 @@ rte_vdpa_get_vf_info(const char *pf_name, uint32_t vfid,
 
 	return rte_rpc_vdpa_ops.get_vf_info(pf_name, vfid, vf_info);
 }
+
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+int
+rte_vdpa_vf_dev_debug(const char *pf_name,
+		struct vdpa_debug_vf_info *vf_debug_info)
+{
+	RTE_GLOBAL_FUNC_PTR_ERR_RET(debug_vf_info, -ENOTSUP);
+
+	return rte_rpc_vdpa_ops.debug_vf_info(pf_name, vf_debug_info);
+}
+#endif

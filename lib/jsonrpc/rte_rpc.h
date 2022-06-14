@@ -49,6 +49,24 @@ enum vdpa_vf_prov_flags {
 	VDPA_VF_MAC,
 };
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+struct vdpa_debug_vf_info {
+	uint32_t vfid;
+	uint32_t test_type;
+	uint32_t test_mode;
+	uint64_t mem_size;
+};
+enum vdpa_vf_debug_test_type {
+	VDPA_DEBUG_CMD_INVALID,
+	VDPA_DEBUG_CMD_RUNNING = 1,
+	VDPA_DEBUG_CMD_QUIESCED,
+	VDPA_DEBUG_CMD_FREEZED,
+	VDPA_DEBUG_CMD_START_LOGGING,
+	VDPA_DEBUG_CMD_STOP_LOGGING,
+	VDPA_DEBUG_CMD_MAX_INVALID,
+};
+#endif
+
 struct rte_rpc_vdpa_global_ops {
 	/** Add pf to system */
 	int (*pf_dev_add)(const char *pf_name);
@@ -77,6 +95,11 @@ struct rte_rpc_vdpa_global_ops {
 	/** Get info of vfs */
 	int (*get_vf_info)(const char *pf_name, uint32_t vfid,
 		struct vdpa_vf_info *vf_info);
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+	/** debug vf */
+	int (*debug_vf_info)(const char *pf_name,
+		struct vdpa_debug_vf_info *vf_debug_info);
+#endif
 };
 
 __rte_internal
@@ -110,6 +133,12 @@ rte_vdpa_get_vf_list(const char *pf_name, struct vdpa_vf_info *vf_info,
 int
 rte_vdpa_get_vf_info(const char *pf_name, uint32_t vfid,
 		struct vdpa_vf_info *vf_info);
+
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+int
+rte_vdpa_vf_dev_debug(const char *pf_name,
+		struct vdpa_debug_vf_info *vf_debug_info);
+#endif
 
 #ifdef __cplusplus
 }
