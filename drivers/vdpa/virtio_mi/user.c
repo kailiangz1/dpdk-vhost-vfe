@@ -289,8 +289,11 @@ virtio_vdpa_rpc_get_vf_info(const char *pf_name, uint32_t vfid, struct vdpa_vf_i
 	if (rte_pci_addr_parse(vf_name, &addr))
 		return -EINVAL;
 
-	return virtio_vdpa_dev_list_dump(vf_info, 1, (void *)&addr,
-			virtio_vdpa_dump_vf_by_pci_addr);
+	if (virtio_vdpa_dev_list_dump(vf_info, 1, (void *)&addr,
+			virtio_vdpa_dump_vf_by_pci_addr))
+	return 0;
+
+	return -EINVAL;
 }
 
 RTE_INIT(virtio_vdpa_rpc_init)

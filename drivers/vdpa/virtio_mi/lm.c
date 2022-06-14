@@ -539,7 +539,18 @@ virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv, uint16_t queue_id
 		memset(cvq->virtio_net_hdr_mz->addr, 0, rte_mem_page_size());
 
 		hw->cvq = cvq;
-	} else if (queue_idx == (hw->max_queue_pairs * 2 - 1)) {
+	} else if ((queue_idx == (hw->max_queue_pairs * 2 - 1))||(priv->pdev->id.device_id==(VIRTIO_PCI_MODERN_DEVICEID_NET+1))) {
+		DRV_LOG(ERR, "admin_queue %u init", queue_idx);
+		avq = &vq->aq;
+		avq->mz = mz;
+		avq->virtio_admin_hdr_mz = hdr_mz;
+		avq->virtio_admin_hdr_mem = hdr_mz->iova;
+		memset(avq->virtio_admin_hdr_mz->addr, 0, rte_mem_page_size());
+
+		hw->avq = avq;
+	}
+	if (priv->pdev->id.device_id==(VIRTIO_PCI_MODERN_DEVICEID_NET+1)) {
+		DRV_LOG(ERR, "admin_queue1 %u init", queue_idx);
 		avq = &vq->aq;
 		avq->mz = mz;
 		avq->virtio_admin_hdr_mz = hdr_mz;
@@ -625,6 +636,8 @@ virtio_vdpa_admin_queue_alloc(struct virtio_vdpa_pf_priv *priv)
 		virtio_vdpa_admin_queue_free(priv);
 		return ret;
 	}
+	if (priv->pdev->id.device_id==(VIRTIO_PCI_MODERN_DEVICEID_NET+1))
+		return 0;
 
 	queue_idx = 1;
 	ret = virtio_vdpa_init_admin_queue(priv, queue_idx);
@@ -841,6 +854,7 @@ RTE_INIT(virtio_vdpa_mi_init)
  * The set of PCI devices this driver supports
  */
 static const struct rte_pci_id pci_id_virtio_mi_map[] = {
+	{ RTE_PCI_DEVICE(VIRTIO_PCI_VENDORID, VIRTIO_PCI_MODERN_DEVICEID_NET+1) },
 	{ RTE_PCI_DEVICE(VIRTIO_PCI_VENDORID, VIRTIO_PCI_MODERN_DEVICEID_NET) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
