@@ -19,8 +19,8 @@ modern_net_get_queue_num(struct virtio_hw *hw)
 {
 	uint16_t nr_vq;
 
-	if (virtio_with_feature(hw, VIRTIO_NET_F_MQ) ||
-			virtio_with_feature(hw, VIRTIO_NET_F_RSS)) {
+	if (virtio_dev_with_feature(hw, VIRTIO_NET_F_MQ) ||
+			virtio_dev_with_feature(hw, VIRTIO_NET_F_RSS)) {
 		VIRTIO_OPS(hw)->read_dev_cfg(hw,
 			offsetof(struct virtio_net_config, max_virtqueue_pairs),
 			&hw->max_queue_pairs,
@@ -32,9 +32,9 @@ modern_net_get_queue_num(struct virtio_hw *hw)
 	}
 
 	nr_vq = hw->max_queue_pairs * 2;
-	if (virtio_with_feature(hw, VIRTIO_NET_F_CTRL_VQ))
+	if (virtio_dev_with_feature(hw, VIRTIO_NET_F_CTRL_VQ))
 		nr_vq += 1;
-	if (virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ))
+	if (virtio_dev_with_feature(hw, VIRTIO_F_ADMIN_VQ))
 		nr_vq += 1;
 
 	PMD_INIT_LOG(DEBUG, "Virtio net nr_vq is %d", nr_vq);
