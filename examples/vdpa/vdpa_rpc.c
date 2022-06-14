@@ -300,6 +300,29 @@ static cJSON *vdpa_vf_dev_list(const char *pf_name)
 	return result;
 }
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+static cJSON *vdpa_vf_dev_debug(const char *pf_name,
+		struct vdpa_debug_vf_info *vf_debug_info)
+{
+	struct vdpa_vf_info vf_info = {0};
+	cJSON *result = cJSON_CreateObject();
+
+	if (rte_vdpa_get_vf_info(pf_name, vf_debug_info->vfid, &vf_info)) {
+		cJSON_AddStringToObject(result, "Error",
+		"Fail to find VF device");
+		return result;
+	}
+	if (rte_vdpa_vf_dev_debug(pf_name, vf_debug_info)) {
+		cJSON_AddStringToObject(result, "Error",
+		"Fail to debug VF device");
+		return result;
+	}
+	cJSON_AddStringToObject(result, "Success",
+				vf_info.vf_params.vf_name);
+	return result;
+}
+#endif
+
 static cJSON *mgmtvf(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
 	cJSON *vf_prov = cJSON_GetObjectItem(params, "provision");
@@ -309,6 +332,9 @@ static cJSON *mgmtvf(jrpc_context *ctx, cJSON *params, cJSON *id)
 	cJSON *vf_info_input = cJSON_GetObjectItem(params, "info");
 	cJSON *vf_id = cJSON_GetObjectItem(params, "vfid");
 	cJSON *pf_dev = cJSON_GetObjectItem(params, "mgmtpf");
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+	cJSON *vf_debug = cJSON_GetObjectItem(params, "debug");
+#endif
 	cJSON *result = NULL;
 	struct vdpa_rpc_context *rpc_ctx;
 
@@ -368,7 +394,31 @@ static cJSON *mgmtvf(jrpc_context *ctx, cJSON *params, cJSON *id)
 		/* Parse PCI device name*/
 		result = vdpa_vf_dev_info(pf_dev->valuestring,
 				vf_id->valueint);
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+	} else if (vf_debug && vf_id && pf_dev) {
+		struct vdpa_debug_vf_info vf_debug_info = {0};
+		cJSON *test_operation = cJSON_GetObjectItem(params, "test_operation");
+
+		vf_debug_info.vfid = vf_id->valueint;
+		vf_debug_info.test_type = test_operation->valueint;
+		if (vf_debug_info.test_type >= VDPA_DEBUG_CMD_MAX_INVALID ||
+			vf_debug_info.test_type == VDPA_DEBUG_CMD_INVALID) {
+				goto error_vf;
+		}
+		if (vf_debug_info.test_type == VDPA_DEBUG_CMD_START_LOGGING) {
+			cJSON *size_mode = cJSON_GetObjectItem(params, "size_mode");
+			cJSON *mem_size = cJSON_GetObjectItem(params, "mem_size");
+
+			vf_debug_info.test_mode = size_mode->valueint;
+			vf_debug_info.mem_size = mem_size->valueint;
+		}
+		result = vdpa_vf_dev_debug(pf_dev->valuestring,
+				&vf_debug_info);
 	}
+error_vf:
+#else
+	}
+#endif
 	if (!result) {
 		result = cJSON_CreateObject();
 		cJSON_AddStringToObject(result, "Error",
