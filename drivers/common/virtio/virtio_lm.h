@@ -98,4 +98,20 @@ __rte_internal int
 virtio_vdpa_dev_list_dump(void *buf, int max_count, void *filter,
 		vdpa_dump_func_t dump_func);
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+__rte_internal uint16_t
+virtio_vdpa_dev_nr_vq_get(struct virtio_vdpa_priv *priv);
+
+__rte_internal struct virtio_vdpa_priv *
+virtio_vdpa_find_priv_resource_by_name(const char *vf_name);
+
+__rte_internal int
+virtio_vdpa_used_vring_addr_get(struct virtio_vdpa_priv *priv, int qix,
+		uint64_t *used_vring_addr, uint32_t *used_vring_len);
+
+__rte_internal int
+virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix,
+		uint64_t *desc_addr, uint32_t *desc_len);
+#endif
+
 #endif /* _VIRTIO_LM_H_ */

@@ -276,6 +276,178 @@ virtio_vdpa_rpc_get_vf_info(const char *pf_name, uint32_t vfid,
 	return (ret < 0 ? ret : 0);
 }
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+#define VIRTIO_VDPA_DEBUG_PAGE_SIZE (4096)
+#define VIRTIO_VDPA_DEBUG_MZONE_LEN (4*1024*1024)
+
+static inline unsigned int
+log2above(unsigned int v)
+{
+	unsigned int l;
+	unsigned int r;
+
+	for (l = 0, r = 0; (v >> 1); ++l, v >>= 1)
+		r |= (v & 1);
+	return l + r;
+}
+
+#define ONES32(size) \
+	((size) ? (0xffffffff >> (32 - (size))) : 0xffffffff)
+
+#define ROUND_DOWN_BITS(source, num_bits) \
+	((source >> num_bits) << num_bits)
+
+#define ROUND_UP_BITS(source, num_bits) \
+	(ROUND_DOWN_BITS((source + ((1 << num_bits) - 1)), num_bits))
+
+#define DIV_ROUND_UP_BITS(source, num_bits) \
+	(ROUND_UP_BITS(source, num_bits) >> num_bits)
+
+static int
+virtio_vdpa_rpc_check_dirty_logging(uint64_t dirty_addr, uint32_t dirty_len,
+		uint8_t *log_base, uint32_t log_size, /* (iova, len) in start loging sge[0] */
+		uint16_t mode, uint32_t guest_page_size) /*vm used page size*/
+{
+	uint32_t log_log_page_size = log2above(guest_page_size);
+	uint32_t page_offset = dirty_addr & ONES32(log_log_page_size);
+	uint64_t start_page = (dirty_addr >> log_log_page_size);
+	uint32_t num_pages, num_of_bytes = 0;
+	uint8_t  written_data = 0;
+	uint32_t byte_offset =	0;
+	uint64_t start_byte = 0, i;
+
+	num_pages = DIV_ROUND_UP_BITS(dirty_len + page_offset,
+						      log_log_page_size);
+
+	switch (mode) {
+	case VIRTIO_M_DIRTY_TRACK_PUSH_BITMAP:
+	case VIRTIO_M_DIRTY_TRACK_PULL_BITMAP:
+		byte_offset = start_page & ONES32(3);
+		num_of_bytes = DIV_ROUND_UP_BITS(num_pages + byte_offset, 3);
+		start_byte = start_page >> 3;
+		written_data = 0xff;
+		break;
+	case VIRTIO_M_DIRTY_TRACK_PUSH_BYTEMAP:
+	case VIRTIO_M_DIRTY_TRACK_PULL_BYTEMAP:
+		num_of_bytes = num_pages;
+		start_byte = start_page;
+		written_data = 0x1;
+		break;
+	default:
+		RPC_LOG(ERR, "check_dirty_logging failed<<<<Unsurpported map mode>>>>");
+		return -EOPNOTSUPP;
+	}
+
+	if ((start_byte + num_of_bytes) > log_size) {
+		RPC_LOG(ERR, "check_dirty_logging failed<<<<Too many pages>>>>");
+		return -EINVAL;
+	}
+	/*check*/
+	for (i = 0; i < num_of_bytes; i++)
+		if (log_base[start_byte + i] != written_data) {
+			RPC_LOG(ERR, "check_dirty_logging failed<<<<Byte[%" PRIu64 "] should be 0x%x, actual is [%u]>>>>",
+					start_byte + i, written_data, log_base[start_byte + i]);
+			return -EINVAL;
+		}
+
+	return 0;
+}
+
+static int
+virtio_vdpa_rpc_debug(const char *pf_name,
+		struct vdpa_debug_vf_info *vf_debug_info)
+{
+	const struct rte_memzone *vdpa_dp_mz = NULL;
+	char vf_name[RTE_DEV_NAME_MAX_LEN];
+	struct virtio_vdpa_pf_priv *priv;
+	struct virtio_vdpa_priv *vf_priv;
+	struct vdpa_debug_info info;
+	uint16_t queue_num;
+	int ret, i;
+
+	if (!pf_name || !vf_debug_info)
+		return -EINVAL;
+
+	RPC_LOG(ERR, "vdev_id: %u, cmd: %u", vf_debug_info->vfid, vf_debug_info->test_type);
+
+	priv = virtio_vdpa_get_mi_by_bdf(pf_name);
+	if (!priv)
+		return -ENODEV;
+
+	if (virtio_vdpa_get_vf_name_by_vfid(pf_name, vf_debug_info->vfid,
+			vf_name,
+			RTE_DEV_NAME_MAX_LEN))
+			return -EINVAL;
+
+	info.vfid = vf_debug_info->vfid;
+	if (vf_debug_info->test_type == VDPA_DEBUG_CMD_START_LOGGING) {
+		uint32_t unit = 1;
+
+		RPC_LOG(ERR, "\ttrack_mode: %u", vf_debug_info->test_mode);
+		if (!vdpa_dp_mz) {
+			if (!vdpa_dp_mz) {
+				vdpa_dp_mz = rte_memzone_reserve_aligned("VIRTIO_VDPA_DEBUG_DP_MZ",
+						VIRTIO_VDPA_DEBUG_MZONE_LEN,
+						rte_socket_id(), RTE_MEMZONE_IOVA_CONTIG,
+						VIRTIO_VRING_ALIGN);
+			}
+			RTE_VERIFY(vdpa_dp_mz);
+		}
+
+		info.track_mode = vf_debug_info->test_mode;
+		info.page_size = VIRTIO_VDPA_DEBUG_PAGE_SIZE;
+		info.range_addr = 0;
+		info.range_length = vf_debug_info->mem_size;
+		if ((info.track_mode == VIRTIO_M_DIRTY_TRACK_PUSH_BITMAP ||
+				info.track_mode == VIRTIO_M_DIRTY_TRACK_PULL_BITMAP))
+			unit = 8;
+		info.num_sges = 1;
+		info.data[0].addr = vdpa_dp_mz->iova;
+		info.data[0].len = info.range_length/(info.page_size * unit);
+		RPC_LOG(DEBUG, "range_length[%" PRIu64 "]/(page_size[%u] * unit[%u]) = %u",
+				info.range_length, info.page_size, unit, info.data[0].len);
+		if(!info.data[0].len) {
+			RPC_LOG(ERR, "<<<<Invalid map len>>>>");
+			return -EINVAL;
+		}
+	}
+
+	ret = virtio_vdpa_debug(priv, vf_debug_info->test_type, &info);
+	if (vf_debug_info->test_type != VDPA_DEBUG_CMD_STOP_LOGGING)
+		return ret;
+
+	vf_priv = virtio_vdpa_find_priv_resource_by_name(vf_name);
+	RTE_VERIFY(vf_priv);
+	queue_num = virtio_vdpa_dev_nr_vq_get(vf_priv);
+	for (i = 0; i < queue_num; i++) {
+		uint64_t dirty_addr;
+		uint32_t dirty_len;
+		ret = 0;
+
+		if (!virtio_vdpa_dirty_desc_get(vf_priv, i, &dirty_addr, &dirty_len)) {
+			ret = virtio_vdpa_rpc_check_dirty_logging(dirty_addr, dirty_len,
+					vdpa_dp_mz->addr, info.data[0].len,
+					info.track_mode, info.page_size);
+			if (ret)
+				break;
+		}
+
+		if (!virtio_vdpa_used_vring_addr_get(vf_priv, i, &dirty_addr, &dirty_len)) {
+			ret = virtio_vdpa_rpc_check_dirty_logging(dirty_addr, dirty_len,
+					vdpa_dp_mz->addr, info.data[0].len,
+					info.track_mode, info.page_size);
+			if (ret)
+				break;
+		}
+	}
+
+	if (vdpa_dp_mz)
+		rte_memzone_free(vdpa_dp_mz);
+	vdpa_dp_mz = NULL;
+	return ret;
+}
+#endif
+
 RTE_INIT(virtio_vdpa_rpc_init)
 {
 	struct rte_rpc_vdpa_global_ops vdpa_rpc_ops = {
@@ -287,6 +459,9 @@ RTE_INIT(virtio_vdpa_rpc_init)
 		.pf_dev_vf_dev_remove  = virtio_vdpa_rpc_pf_dev_vf_dev_remove,
 		.get_vf_list	       = virtio_vdpa_rpc_get_vf_list,
 		.get_vf_info	       = virtio_vdpa_rpc_get_vf_info,
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+		.debug_vf_info	       = virtio_vdpa_rpc_debug,
+#endif
 	};
 
 	rte_rpc_vdpa_global_ops_init(&vdpa_rpc_ops);

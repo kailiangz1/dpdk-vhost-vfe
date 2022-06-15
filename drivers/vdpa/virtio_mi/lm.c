@@ -543,6 +543,7 @@ virtio_vdpa_cmd_dirty_page_start_track(struct virtio_vdpa_pf_priv *priv,
 	int dlen[1];
 	int ret, i;
 
+	DRV_LOG(DEBUG, ">>>>");
 	RTE_VERIFY(priv);
 	RTE_VERIFY(num_sges <= VIRTIO_VDPA_MI_MAX_SGES);
 
@@ -792,6 +793,7 @@ virtio_vdpa_init_admin_queue(struct virtio_vdpa_pf_priv *priv)
 	size = vring_size(hw, vq_size, VIRTIO_VRING_ALIGN);
 	vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_VRING_ALIGN);
 
+	DRV_LOG(INFO, "vq_ring_size %u", vq->vq_ring_size);
 	mz = rte_memzone_reserve_aligned(vq_name, vq->vq_ring_size,
 			numa_node, RTE_MEMZONE_IOVA_CONTIG,
 			VIRTIO_VRING_ALIGN);
@@ -943,6 +945,60 @@ virtio_vdpa_mi_list_dump(void *buf, int max_count, void *filter,
 	return count;
 }
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+const char *vdpa_cmd_names[VDPA_DEBUG_CMD_MAX_INVALID + 1] = {
+	[VDPA_DEBUG_CMD_INVALID] = "INVALID",
+	[VDPA_DEBUG_CMD_RUNNING] = "CMD_RUNNING",
+	[VDPA_DEBUG_CMD_QUIESCED] = "CMD_QUIESCED",
+	[VDPA_DEBUG_CMD_FREEZED] = "CMD_FREEZED",
+	[VDPA_DEBUG_CMD_START_LOGGING] = "CMD_START_LOGGING",
+	[VDPA_DEBUG_CMD_STOP_LOGGING] = "CMD_STOP_LOGGING",
+	[VDPA_DEBUG_CMD_MAX_INVALID] = "INVALID",/* 5 */
+};
+
+int
+virtio_vdpa_debug(struct virtio_vdpa_pf_priv *priv, uint32_t cmd,
+		struct vdpa_debug_info* info)
+{
+	int ret = -1;
+
+	DRV_LOG(DEBUG, ">>>>");
+	switch(cmd) {
+	case VDPA_DEBUG_CMD_RUNNING:
+		ret = virtio_vdpa_cmd_resume(priv, info->vfid, VIRTIO_S_RUNNING);
+		DRV_LOG(ERR, "vf debug: cmd_resume: VIRTIO_S_RUNNING, ret: %d", ret);
+		break;
+	case VDPA_DEBUG_CMD_QUIESCED:
+		ret = virtio_vdpa_cmd_suspend(priv, info->vfid, VIRTIO_S_QUIESCED);
+		DRV_LOG(ERR, "vf debug: cmd_suspend: VIRTIO_S_QUIESCED, ret: %d", ret);
+		break;
+	case VDPA_DEBUG_CMD_FREEZED:
+		ret = virtio_vdpa_cmd_suspend(priv, info->vfid, VIRTIO_S_FREEZED);
+		DRV_LOG(ERR, "vf debug: cmd_suspend: VIRTIO_S_FREEZED, ret: %d", ret);
+		break;
+	case VDPA_DEBUG_CMD_START_LOGGING:
+		ret = virtio_vdpa_cmd_dirty_page_start_track(priv, info->vfid,
+				info->track_mode,
+				info->page_size,
+				info->range_addr,
+				info->range_length,
+				info->num_sges,
+				info->data);
+		DRV_LOG(ERR, "vf debug: START_LOGGING, ret: %d", ret);
+		break;
+	case VDPA_DEBUG_CMD_STOP_LOGGING:
+		ret = virtio_vdpa_cmd_dirty_page_stop_track(priv, info->vfid,
+				info->range_addr);
+		DRV_LOG(ERR, "vf debug: STOP_LOGGING, ret: %d", ret);
+		break;
+	default:
+		DRV_LOG(ERR, "Wrong cmd %u", cmd);
+		break;
+	}
+	return 0;
+}
+#endif
+
 static int vdpa_mi_check_handler(__rte_unused const char *key,
 		const char *value, void *ret_val)
 {
@@ -1025,6 +1081,9 @@ virtio_vdpa_mi_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
 	struct virtio_vdpa_pf_priv *priv = NULL;
 	int vdpa = 0, ret;
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+	int i;
+#endif
 	uint64_t features;
 
 	RTE_VERIFY(rte_eal_iova_mode() == RTE_IOVA_VA);
@@ -1099,6 +1158,13 @@ virtio_vdpa_mi_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	/* Start the device */
 	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_DRIVER_OK);
+
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+	DRV_LOG(ERR, "Debug cmd:");
+	for (i = 0; i < VDPA_DEBUG_CMD_MAX_INVALID; i++) {
+		DRV_LOG(ERR, "\t%s,\tvalue %d", vdpa_cmd_names[i], i);
+	}
+#endif
 
 	pthread_mutex_lock(&mi_priv_list_lock);
 	TAILQ_INSERT_TAIL(&virtio_mi_priv_list, priv, next);

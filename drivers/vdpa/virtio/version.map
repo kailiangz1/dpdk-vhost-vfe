@@ -4,6 +4,10 @@ INTERNAL {
 	virtio_vdpa_get_vf_info;
 	virtio_vdpa_dev_list_dump;
 	is_mi_pf;
+	virtio_vdpa_dev_nr_vq_get;
+	virtio_vdpa_find_priv_resource_by_name;
+	virtio_vdpa_dirty_desc_get;
+	virtio_vdpa_used_vring_addr_get;
 
 	local: *;
 };
