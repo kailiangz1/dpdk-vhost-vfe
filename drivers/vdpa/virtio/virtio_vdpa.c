@@ -50,6 +50,127 @@ virtio_vdpa_find_priv_resource_by_vdev(const struct rte_vdpa_device *vdev)
 	return priv;
 }
 
+static struct virtio_vdpa_priv *
+virtio_vdpa_find_priv_resource_by_name(const char *vf_name)
+{
+	struct virtio_vdpa_priv *priv;
+	bool found = false;
+
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
+		if (strcmp(vf_name, priv->pdev->device.name) == 0) {
+			found = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+	if (!found) {
+		DRV_LOG(ERR, "Invalid vDPA device: %s", vf_name);
+		rte_errno = ENODEV;
+		return NULL;
+	}
+	return priv;
+}
+
+int virtio_vdpa_dirty_desc_get(const char *vf_name, int qix, uint64_t *desc_addr, uint32_t *desc_len)
+{
+	struct virtio_vdpa_priv *priv =
+		virtio_vdpa_find_priv_resource_by_name(vf_name);
+	struct rte_vhost_vring vq;
+	uint32_t desc_id;
+	int ret;
+
+	if (priv == NULL) {
+		DRV_LOG(ERR, "Invalid vf name: %s", vf_name);
+		return -ENODEV;
+	}
+
+	ret = rte_vhost_get_vhost_vring(priv->vid, qix, &vq);
+	if (ret) {
+		DRV_LOG(ERR, "Vf: %s qix:%d fail get vhost ring", vf_name, qix);
+		return -ENODEV;
+	}
+
+	desc_id = vq.used->ring[vq.used->idx].id;
+	*desc_addr = vq.desc[desc_id].addr;
+	*desc_len = vq.used->ring[vq.used->idx].len;
+
+	if (priv->pdev->id.device_id == VIRTIO_PCI_MODERN_DEVICEID_BLK) {
+		struct virtio_blk_outhdr *blk_hdr;
+		blk_hdr = (struct virtio_blk_outhdr *)desc_addr;
+		if (blk_hdr->type != VIRTIO_BLK_T_IN) {
+			DRV_LOG(ERR, "Vf: %s qix:%d last desc is not read", vf_name, qix);
+			return -EINVAL;
+		}
+		if (*desc_len > sizeof(struct virtio_blk_outhdr)) {
+			*desc_addr = *desc_addr + sizeof(struct virtio_blk_outhdr);
+		} else {
+			if (!(vq.desc[desc_id].flags & VRING_DESC_F_NEXT)) {
+				DRV_LOG(ERR, "Vf: %s qix:%d last desc is too short", vf_name, qix);
+				return -EINVAL;
+			}
+
+			*desc_addr = vq.desc[vq.desc[desc_id].next].addr;
+			*desc_len = vq.used->ring[vq.used->idx].len;
+		}
+	}
+
+	return 0;
+}
+
+int virtio_vdpa_used_vring_addr_get(const char *vf_name, int qix, uint64_t *used_vring_addr, uint32_t *used_vring_len)
+{
+	struct virtio_vdpa_priv *priv =
+		virtio_vdpa_find_priv_resource_by_name(vf_name);
+
+	if (priv == NULL) {
+		DRV_LOG(ERR, "Invalid vf name: %s", vf_name);
+		return -ENODEV;
+	}
+
+	*used_vring_addr = priv->vrings[qix]->used;
+	*used_vring_len = sizeof(struct vring_used);
+	return 0;
+}
+
+int virtio_vdpa_max_phy_addr_get(const char *vf_name, uint64_t *phy_addr)
+{
+	struct virtio_vdpa_priv *priv =
+		virtio_vdpa_find_priv_resource_by_name(vf_name);
+	struct rte_vhost_memory *mem = NULL;
+	struct rte_vhost_mem_region *reg;
+	int ret;
+	uint32_t i = 0;
+
+	if (priv == NULL) {
+		DRV_LOG(ERR, "Invalid vf name: %s", vf_name);
+		return -ENODEV;
+	}
+
+	*phy_addr = 0;
+	ret = rte_vhost_get_mem_table(priv->vid, &mem);
+	if (ret < 0) {
+		DRV_LOG(ERR, "%s failed to get VM memory layout ret:%d",
+					priv->vdev->device->name, ret);
+		return ret;
+	}
+
+	for (i = 0; i < mem->nregions; i++) {
+		reg = &mem->regions[i];
+		DRV_LOG(INFO, "%s, region %u: HVA 0x%" PRIx64 ", "
+			"GPA 0x%" PRIx64 ", size 0x%" PRIx64 ".",
+			"DMA map", i,
+			reg->host_user_addr, reg->guest_phys_addr, reg->size);
+
+		if (*phy_addr < reg->guest_phys_addr + reg->size)
+			*phy_addr = reg->guest_phys_addr + reg->size;
+	}
+
+	DRV_LOG(INFO, "Max phy addr is 0x%" PRIx64, *phy_addr);
+	free(mem);
+	return 0;
+}
+
 static int
 virtio_vdpa_vqs_max_get(struct rte_vdpa_device *vdev, uint32_t *queue_num)
 {
