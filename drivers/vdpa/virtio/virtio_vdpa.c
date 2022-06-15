@@ -72,6 +72,61 @@ virtio_vdpa_find_priv_resource_by_vdev(const struct rte_vdpa_device *vdev)
 	return priv;
 }
 
+#ifdef RTE_LIBRTE_VDPA_DEBUG
+uint16_t
+virtio_vdpa_dev_nr_vq_get(struct virtio_vdpa_priv *priv)
+{
+	return virtio_pci_dev_nr_vq_get(priv->vpdev);
+}
+
+struct virtio_vdpa_priv *
+virtio_vdpa_find_priv_resource_by_name(const char *vf_name)
+{
+	struct virtio_vdpa_priv *priv;
+	bool found = false;
+
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
+		if (strcmp(vf_name, priv->pdev->device.name) == 0) {
+			found = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+	if (!found) {
+		DRV_LOG(ERR, "Invalid vDPA device: %s", vf_name);
+		rte_errno = ENODEV;
+		return NULL;
+	}
+	return priv;
+}
+
+int virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix, uint64_t *desc_addr, uint32_t *desc_len)
+{
+	struct rte_vhost_vring vq;
+	uint32_t desc_id;
+	int ret;
+
+	ret = rte_vhost_get_vhost_vring(priv->vid, qix, &vq);
+	if (ret) {
+		DRV_LOG(ERR, "Vf: qix:%d fail get vhost ring", qix);
+		return -ENODEV;
+	}
+
+	desc_id = vq.used->ring[vq.used->idx].id;
+	*desc_addr = vq.desc[desc_id].addr;
+	*desc_len = vq.used->ring[vq.used->idx].len;
+	return 0;
+}
+
+int virtio_vdpa_used_vring_addr_get(struct virtio_vdpa_priv *priv, int qix, uint64_t *used_vring_addr, uint32_t *used_vring_len)
+{
+	*used_vring_addr = priv->vrings[qix]->used;
+	*used_vring_len = sizeof(struct vring_used);
+	return 0;
+}
+#endif
+
 static int
 virtio_vdpa_vqs_max_get(struct rte_vdpa_device *vdev, uint32_t *queue_num)
 {
