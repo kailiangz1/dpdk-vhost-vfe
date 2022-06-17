@@ -13,6 +13,7 @@
 #include "virtio_logs.h"
 #include "virtqueue.h"
 #include "virtio_blk.h"
+#include "virtio_admin.h"
 
 /*
  * Following macros are derived from linux/pci_regs.h, however,
@@ -441,6 +442,51 @@ modern_get_queue_size(struct virtio_hw *hw, uint16_t queue_id)
 
 	rte_write16(queue_id, &dev->common_cfg->queue_select);
 	return rte_read16(&dev->common_cfg->queue_size);
+}
+
+static uint16_t
+modern_net_get_queue_num(struct virtio_hw *hw)
+{
+	uint16_t nr_vq;
+
+	if (virtio_with_feature(hw, VIRTIO_NET_F_MQ) ||
+			virtio_with_feature(hw, VIRTIO_NET_F_RSS)) {
+		VIRTIO_OPS(hw)->read_dev_cfg(hw,
+			offsetof(struct virtio_net_config, max_virtqueue_pairs),
+			&hw->max_queue_pairs,
+			sizeof(hw->max_queue_pairs));
+	} else {
+		PMD_INIT_LOG(DEBUG,
+				 "Neither VIRTIO_NET_F_MQ nor VIRTIO_NET_F_RSS are supported");
+		hw->max_queue_pairs = 1;
+	}
+
+	nr_vq = hw->max_queue_pairs * 2;
+	if (virtio_with_feature(hw, VIRTIO_NET_F_CTRL_VQ))
+		nr_vq += 1;
+
+	if (virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ))
+		nr_vq += 1;
+
+	PMD_INIT_LOG(DEBUG, "Virtio net nr_vq is %d", nr_vq);
+	return nr_vq;
+
+}
+
+static uint16_t
+modern_blk_get_queue_num(struct virtio_hw *hw)
+{
+	if (virtio_with_feature(hw, VIRTIO_BLK_F_MQ)) {
+			VIRTIO_OPS(hw)->read_dev_cfg(hw,
+					offsetof(struct virtio_blk_config, num_queues),
+					&hw->num_queues_blk,
+					sizeof(hw->num_queues_blk));
+	} else {
+			hw->num_queues_blk = 1;
+	}
+	PMD_INIT_LOG(DEBUG,"Virtio blk nr_vq is %d",hw->num_queues_blk);
+
+	return hw->num_queues_blk;
 }
 
 static uint16_t
