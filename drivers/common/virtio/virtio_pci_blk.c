@@ -13,6 +13,7 @@
 #include "virtio_logs.h"
 #include "virtqueue.h"
 #include "virtio_blk.h"
+#include "virtio_admin.h"
 
 static uint16_t
 modern_blk_get_queue_num(struct virtio_hw *hw)
@@ -25,6 +26,8 @@ modern_blk_get_queue_num(struct virtio_hw *hw)
 	} else {
 			hw->num_queues_blk = 1;
 	}
+	if (virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ))
+		hw->num_queues_blk += 1;
 	PMD_INIT_LOG(DEBUG,"Virtio blk nr_vq is %d",hw->num_queues_blk);
 
 	return hw->num_queues_blk;

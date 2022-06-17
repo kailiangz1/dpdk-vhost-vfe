@@ -12,6 +12,7 @@
 #include "virtio_pci.h"
 #include "virtio_logs.h"
 #include "virtqueue.h"
+#include "virtio_admin.h"
 
 static uint16_t
 modern_net_get_queue_num(struct virtio_hw *hw)
@@ -32,6 +33,8 @@ modern_net_get_queue_num(struct virtio_hw *hw)
 
 	nr_vq = hw->max_queue_pairs * 2;
 	if (virtio_with_feature(hw, VIRTIO_NET_F_CTRL_VQ))
+		nr_vq += 1;
+	if (virtio_with_feature(hw, VIRTIO_F_ADMIN_VQ))
 		nr_vq += 1;
 
 	PMD_INIT_LOG(DEBUG, "Virtio net nr_vq is %d", nr_vq);
