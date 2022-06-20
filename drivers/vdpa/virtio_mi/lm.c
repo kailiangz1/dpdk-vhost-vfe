@@ -103,6 +103,49 @@ virtio_vdpa_get_pf_info(struct virtio_vdpa_pf_priv *priv,
 	pf_info->pci_addr = priv->pdev->addr;
 }
 
+/* Debugging assists */
+static inline void __hexdump(unsigned long start, unsigned long end,
+			     unsigned long p, size_t sz, const unsigned char *c)
+{
+	while (start < end) {
+		unsigned int pos = 0;
+		char buf[64];
+		int nl = 0;
+
+		pos += sprintf(buf + pos, "%08lx: ", start);
+		do {
+			if ((start < p) || (start >= (p + sz)))
+				pos += sprintf(buf + pos, "..");
+			else
+				pos += sprintf(buf + pos, "%02x", *(c++));
+			if (!(++start & 15)) {
+				buf[pos++] = '\n';
+				nl = 1;
+			} else {
+				nl = 0;
+				if (!(start & 1))
+					buf[pos++] = ' ';
+				if (!(start & 3))
+					buf[pos++] = ' ';
+			}
+		} while (start & 15);
+		//if (!nl)
+		//	buf[pos++] = '\n';
+		buf[pos] = '\0';
+		DRV_LOG(DEBUG, "%s", buf);
+	}
+}
+
+static inline void hexdump(const void *ptr, size_t sz)
+{
+	unsigned long p = (unsigned long)ptr;
+	unsigned long start = p & ~15;
+	unsigned long end = (p + sz + 15) & ~15;
+	const unsigned char *c = ptr;
+
+	__hexdump(start, end, p, sz, c);
+}
+
 static struct virtio_admin_ctrl *
 virtio_vdpa_send_admin_command_split(struct virtadmin_ctl *avq,
 		struct virtio_admin_ctrl *ctrl,
@@ -127,6 +170,8 @@ virtio_vdpa_send_admin_command_split(struct virtadmin_ctl *avq,
 	vq->vq_split.ring.desc[head].len = sizeof(struct virtio_admin_ctrl_hdr);
 	vq->vq_free_cnt--;
 	i = vq->vq_split.ring.desc[head].next;
+	DRV_LOG(DEBUG, "====HDR====");
+	hexdump(rte_mem_iova2virt(vq->vq_split.ring.desc[head].addr), vq->vq_split.ring.desc[head].len);
 
 	for (k = 0; k < pkt_num; k++) {
 		vq->vq_split.ring.desc[i].flags = VRING_DESC_F_NEXT;
@@ -136,6 +181,8 @@ virtio_vdpa_send_admin_command_split(struct virtadmin_ctl *avq,
 		vq->vq_split.ring.desc[i].len = dlen[k];
 		sum += dlen[k];
 		vq->vq_free_cnt--;
+		DRV_LOG(DEBUG, "====DAT[%d]====", k);
+		hexdump(rte_mem_iova2virt(vq->vq_split.ring.desc[i].addr), vq->vq_split.ring.desc[i].len);
 		i = vq->vq_split.ring.desc[i].next;
 	}
 
