@@ -760,6 +760,23 @@ static int vdpa_check_handler(__rte_unused const char *key,
 	return 0;
 }
 
+static int vfid_check_handler(__rte_unused const char *key,
+		const char *value, void *ret_val)
+{
+	char *end = NULL;
+
+	if (!value || !ret_val) {
+		DRV_LOG(ERR,"Invalid parameter of vfid");
+		return -EINVAL;
+	}
+	*(int *)ret_val = strtoul(value, &end, 0);
+	if (end == NULL || *end != '\0') {
+		DRV_LOG(ERR,"Invalid parameter in vfid");
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int vdpa_pf_check_handler(__rte_unused const char *key,
 		const char *value, void *ret_val)
 {
@@ -772,9 +789,10 @@ static int vdpa_pf_check_handler(__rte_unused const char *key,
 }
 
 #define VIRTIO_ARG_VDPA "vdpa"
+#define VIRTIO_ARG_VF_ID "vfid"
 
 static int
-virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa, struct virtio_vdpa_pf_priv **pf)
+virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa, struct virtio_vdpa_pf_priv **pf, int *vf_id)
 {
 	struct rte_kvargs *kvlist;
 	int ret = 0;
@@ -794,8 +812,22 @@ virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa, struct virtio_v
 		 */
 		ret = rte_kvargs_process(kvlist, VIRTIO_ARG_VDPA,
 				vdpa_check_handler, vdpa);
-		if (ret < 0)
+		if (ret < 0) {
 			DRV_LOG(ERR, "Failed to parse %s", VIRTIO_ARG_VDPA);
+			goto error;
+		}
+	}
+
+	if (rte_kvargs_count(kvlist, VIRTIO_ARG_VF_ID) == 1) {
+		/* Vdpa mode selected when there's a key-value pair:
+		 * vdpa=1
+		 */
+		ret = rte_kvargs_process(kvlist, VIRTIO_ARG_VF_ID,
+				vfid_check_handler, vf_id);
+		if (ret < 0) {
+			DRV_LOG(ERR, "Failed to parse %s", VIRTIO_ARG_VF_ID);
+			goto error;
+		}
 	}
 
 	if (rte_kvargs_count(kvlist, VIRTIO_ARG_VDPA_PF) == 1) {
@@ -804,12 +836,14 @@ virtio_pci_devargs_parse(struct rte_devargs *devargs, int *vdpa, struct virtio_v
 		 */
 		ret = rte_kvargs_process(kvlist, VIRTIO_ARG_VDPA_PF,
 				vdpa_pf_check_handler, pf);
-		if (ret < 0)
+		if (ret < 0) {
 			DRV_LOG(ERR, "Failed to parse %s", VIRTIO_ARG_VDPA_PF);
+			goto error;
+		}
 	}
 
+error:
 	rte_kvargs_free(kvlist);
-
 	return ret;
 }
 
@@ -878,7 +912,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		struct rte_pci_device *pci_dev)
 {
 	int vdpa = 0;
-	int ret;
+	int ret, vf_id = 0;
 	struct virtio_vdpa_priv *priv;
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
@@ -886,7 +920,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	rte_pci_device_name(&pci_dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
 
-	ret = virtio_pci_devargs_parse(pci_dev->device.devargs, &vdpa, &pf_priv);
+	ret = virtio_pci_devargs_parse(pci_dev->device.devargs, &vdpa, &pf_priv, &vf_id);
 	if (ret < 0) {
 		DRV_LOG(ERR, "Devargs parsing is failed %d dev:%s", ret, devname);
 		return ret;
@@ -894,6 +928,11 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	/* Virtio vdpa pmd skips probe if device needs to work in none vdpa mode */
 	if (vdpa != 1)
 		return 1;
+
+	if (vf_id <= 0) {
+		DRV_LOG(ERR, "Vfid can not less than 0 dev:%s", devname);
+		return -EINVAL;
+	}
 
 	priv = rte_zmalloc("virtio vdpa device private", sizeof(*priv),
 						RTE_CACHE_LINE_SIZE);
@@ -904,6 +943,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		return -rte_errno;
 	}
 
+	priv->vf_id = vf_id;
 	/* check pf_priv before use it, might be null if not set */
 	priv->pf_priv = pf_priv;
 	if (!priv->pf_priv)

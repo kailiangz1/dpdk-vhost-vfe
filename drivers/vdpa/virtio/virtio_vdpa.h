@@ -40,6 +40,7 @@ struct virtio_vdpa_priv {
 	int vfio_group_fd;
 	int vfio_dev_fd;
 	int vid;
+	int vf_id;
 	int nvec;
 	uint64_t guest_features;
 	struct virtio_vdpa_vring_info **vrings;
