@@ -208,6 +208,32 @@ virtio_pci_dev_notify_area_get(struct virtio_pci_dev *vpdev,
 }
 
 int
+virtio_pci_dev_state_queue_set(struct virtio_pci_dev *vpdev,
+								   uint16_t qid, const struct virtio_pci_dev_vring_info *vring_info)
+{
+	struct virtio_hw *hw;
+	struct virtqueue *hw_vq;
+	unsigned int size;
+
+	hw = &vpdev->hw;
+	hw_vq = hw->vqs[qid];
+	hw_vq->vq_ring_mem  = vring_info->desc;
+	hw_vq->vq_avail_mem = vring_info->avail;
+	hw_vq->vq_used_mem  = vring_info->used;
+	hw_vq->vq_nentries  = vring_info->size;
+	size = vring_size(hw, vring_info->size, VIRTIO_VRING_ALIGN);
+	hw_vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_VRING_ALIGN);
+
+	return 0;
+}
+
+void
+virtio_pci_dev_state_queue_del(struct virtio_pci_dev *vpdev, uint16_t qid)
+{
+
+}
+
+int
 virtio_pci_dev_queue_set(struct virtio_pci_dev *vpdev,
 								   uint16_t qid, const struct virtio_pci_dev_vring_info *vring_info)
 {

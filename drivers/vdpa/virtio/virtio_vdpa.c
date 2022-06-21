@@ -285,7 +285,8 @@ virtio_vdpa_virtq_disable(struct virtio_vdpa_priv *priv, int vq_idx)
 		return ret;
 	}
 
-	virtio_pci_dev_queue_del(priv->vpdev, vq_idx);
+	priv->configured ? virtio_pci_dev_queue_del(priv->vpdev, vq_idx) :
+					virtio_pci_dev_state_queue_del(priv->vpdev, vq_idx);
 
 	ret = virtio_pci_dev_interrupt_disable(priv->vpdev, vq_idx + 1);
 	if (ret) {
@@ -356,11 +357,13 @@ virtio_vdpa_virtq_enable(struct virtio_vdpa_priv *priv, int vq_idx)
 	vring_info.size = vq.size;
 
 	DRV_LOG(DEBUG, "Virtq %d nr_entrys:%d", vq_idx, vq.size);
-	if (virtio_pci_dev_queue_set(priv->vpdev, vq_idx, &vring_info)) {
+
+	ret = priv->configured ? virtio_pci_dev_queue_set(priv->vpdev, vq_idx, &vring_info) :
+					virtio_pci_dev_state_queue_set(priv->vpdev, vq_idx, &vring_info);
+	if (ret) {
 		DRV_LOG(ERR, "%s setup_queue failed", priv->vdev->device->name);
 		return -EINVAL;
 	}
-
 	ret = virtio_vdpa_virtq_doorbell_relay_enable(priv, vq_idx);
 	if (ret) {
 		DRV_LOG(ERR, "%s virtq doorbell relay failed ret:%d",
