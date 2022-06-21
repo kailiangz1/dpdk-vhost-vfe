@@ -88,7 +88,11 @@ virtio_vdpa_features_get(struct rte_vdpa_device *vdev, uint64_t *features)
 		return -ENODEV;
 	}
 
-	virtio_pci_dev_features_get(priv->vpdev, features);
+	if (priv->configured)
+		virtio_pci_dev_features_get(priv->vpdev, features);
+	else
+		virtio_pci_dev_state_features_get(priv->vpdev, features);
+
 	*features |= (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
 	DRV_LOG(INFO, "%s hw feature is 0x%" PRIx64, priv->vdev->device->name, *features);
 
@@ -547,7 +551,11 @@ virtio_vdpa_features_set(int vid)
 	/* TO_DO: check why --- */
 	features |= (1ULL << VIRTIO_F_IOMMU_PLATFORM);
 	features |= (1ULL << VIRTIO_F_RING_RESET);
-	priv->guest_features = virtio_pci_dev_features_set(priv->vpdev, features);
+	if (priv->configured)
+		priv->guest_features = virtio_pci_dev_features_set(priv->vpdev, features);
+	else
+		priv->guest_features = virtio_pci_dev_state_features_set(priv->vpdev, features);
+
 	DRV_LOG(INFO, "%s vid %d guest feature is %" PRIx64 "orign feature is %" PRIx64,
 					priv->vdev->device->name, vid,
 					priv->guest_features, features);

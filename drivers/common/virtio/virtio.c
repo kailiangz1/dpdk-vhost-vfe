@@ -157,6 +157,29 @@ virtio_pci_dev_features_set(struct virtio_pci_dev *vpdev, uint64_t features)
 	return features;
 }
 
+void
+virtio_pci_dev_state_features_get(struct virtio_pci_dev *vpdev, uint64_t *features)
+{
+	struct virtio_hw *hw;
+
+	hw = &vpdev->hw;
+	*features = hw->device_features;
+}
+
+uint64_t
+virtio_pci_dev_state_features_set(struct virtio_pci_dev *vpdev, uint64_t features)
+{
+	struct virtio_hw *hw;
+	uint64_t hw_features;
+
+	hw = &vpdev->hw;
+	hw_features = hw->device_features;
+	features &= hw_features;
+
+	hw->guest_features = features;
+	return features;
+}
+
 int
 virtio_pci_dev_notify_area_get(struct virtio_pci_dev *vpdev,
 										   uint16_t qid, uint64_t *offset, uint64_t *size)
