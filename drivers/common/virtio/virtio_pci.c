@@ -813,6 +813,25 @@ msix_detect:
 	return 0;
 }
 
+int
+virtio_pci_dev_state_bar_copy(struct virtio_pci_dev *vpdev, void *state)
+{
+	struct virtio_hw *hw;
+	struct virtqueue *hw_vq;
+	uint16_t qid, max_q, notify_off;
+
+	max_q = virtio_pci_dev_nr_vq_get(vpdev);
+	hw = &vpdev->hw;
+	for(qid = 0; qid < max_q; qid++) {
+		hw_vq = hw->vqs[qid];
+		rte_write16(qid, &vpdev->common_cfg->queue_select);
+		notify_off = rte_read16(&vpdev->common_cfg->queue_notify_off);
+		hw_vq->notify_addr=  (void *)((uint8_t *)vpdev->notify_base +
+				notify_off * vpdev->notify_off_multiplier);
+	}
+	return 0;
+}
+
 void virtio_pci_dev_legacy_ioport_unmap(struct virtio_hw *hw)
 {
 	rte_pci_ioport_unmap(VTPCI_IO(hw));

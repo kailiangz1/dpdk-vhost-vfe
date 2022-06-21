@@ -25,6 +25,7 @@ INTERNAL {
 	virtio_pci_dev_notify_area_get;
 	virtio_pci_dev_config_read;
 	virtio_pci_dev_config_write;
+	virtio_pci_dev_state_bar_copy;
 
 	local: *;
 };

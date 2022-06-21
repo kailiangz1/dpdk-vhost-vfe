@@ -79,5 +79,7 @@ __rte_internal
 void virtio_pci_dev_config_read(struct virtio_pci_dev *vpdev, size_t offset, void *dst, int length);
 __rte_internal
 void virtio_pci_dev_config_write(struct virtio_pci_dev *vpdev, size_t offset, const void *src, int length);
+__rte_internal
+int virtio_pci_dev_state_bar_copy(struct virtio_pci_dev *vpdev, void *state);
 
 #endif /* _VIRTIO_API_H_ */

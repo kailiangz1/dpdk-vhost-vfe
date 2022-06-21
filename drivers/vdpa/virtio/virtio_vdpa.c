@@ -913,6 +913,9 @@ virtio_vdpa_queues_alloc(struct virtio_vdpa_priv *priv)
 	return 0;
 }
 
+#define VIRTIO_VDPA_STATE_ALIGN 4096
+#define VIRTIO_VDPA_STATE_SIZE 4096
+
 static int
 virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		struct rte_pci_device *pci_dev)
@@ -923,6 +926,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
 	int iommu_group_num;
+	size_t mz_len;
 
 	rte_pci_device_name(&pci_dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
 
@@ -1031,6 +1035,40 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	if (ret) {
 		DRV_LOG(ERR, "%s error alloc virtio dev interrupts ret:%d %s",
 					devname, ret, strerror(errno));
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	priv->state_mz = rte_memzone_reserve_aligned(devname, VIRTIO_VDPA_STATE_SIZE,
+			priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
+			VIRTIO_VDPA_STATE_ALIGN);
+	if (priv->state_mz == NULL) {
+		DRV_LOG(ERR, "Failed to reserve memzone dev:%s", devname);
+		rte_errno = rte_errno ? rte_errno : ENOMEM;
+		goto error;
+	}
+
+	mz_len = priv->state_mz->len;
+	memset(priv->state_mz->addr, 0, mz_len);
+
+	ret = virtio_pci_dev_state_bar_copy(priv->vpdev, priv->state_mz->addr);
+	if (ret) {
+		DRV_LOG(ERR, "%s error copy bar to state ret:%d",
+					devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv,priv->vf_id,VIRTIO_S_QUIESCED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", devname, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv,priv->vf_id,VIRTIO_S_FREEZED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", devname, priv->vf_id, ret);
 		rte_errno = rte_errno ? rte_errno : EINVAL;
 		goto error;
 	}
