@@ -913,6 +913,55 @@ virtio_vdpa_queues_alloc(struct virtio_vdpa_priv *priv)
 	return 0;
 }
 
+static int
+virtio_vdpa_get_pf_name(const char *vf_name, char *pf_name, size_t pf_name_len)
+{
+	char pf_path[1024];
+	char link[1024];
+	int ret;
+
+	if (!pf_name || !vf_name)
+		return -EINVAL;
+
+	snprintf(pf_path, 1024, "%s/%s/physfn", rte_pci_get_sysfs_path(), vf_name);
+	memset(link, 0, sizeof(link));
+	ret = readlink(pf_path, link, (sizeof(link)-1));
+	if ((ret < 0) || ((unsigned int)ret > (sizeof(link)-1)))
+		return -ENOENT;
+
+	strncpy(pf_name, &link[3], pf_name_len);
+	DRV_LOG(DEBUG, "Link %s, vf name: %s pf name: %s", link, vf_name, pf_name);
+
+	return 0;
+}
+#define VIRTIO_VDPA_MAX_VF 4096
+static int
+virtio_vdpa_get_vfid(const char *pf_name, const char *vf_name, int *vfid)
+{
+	char pf_path[1024];
+	char link[1024];
+	int ret, i;
+
+	if (!pf_name || !vf_name)
+		return -EINVAL;
+
+	for(i = 0; i < VIRTIO_VDPA_MAX_VF; i++) {
+		snprintf(pf_path, 1024, "%s/%s/virtfn%d", rte_pci_get_sysfs_path(), pf_name, i);
+		memset(link, 0, sizeof(link));
+		ret = readlink(pf_path, link, (sizeof(link)-1));
+		if ((ret < 0) || ((unsigned int)ret > (sizeof(link)-1)))
+			return -ENOENT;
+
+		if (strcmp(&link[3], vf_name) == 0) {
+			*vfid = i + 1;
+			DRV_LOG(DEBUG, "Vf name: %s pf name: %s vfid %d", vf_name, pf_name, *vfid);
+			return 0;
+		}
+	}
+	DRV_LOG(DEBUG, "Vf name: %s pf name: %s can't get vfid", vf_name, pf_name);
+	return -ENODEV;
+}
+
 #define VIRTIO_VDPA_STATE_ALIGN 4096
 #define VIRTIO_VDPA_STATE_SIZE 4096
 
@@ -925,6 +974,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct virtio_vdpa_priv *priv;
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
+	char pfname[RTE_DEV_NAME_MAX_LEN] = {0};
 	int iommu_group_num;
 	size_t mz_len;
 
@@ -953,11 +1003,29 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		return -rte_errno;
 	}
 
-	priv->vf_id = vf_id;
+	ret = virtio_vdpa_get_pf_name(devname, pfname, sizeof(pfname));
+	if (ret) {
+		DRV_LOG(ERR, "%s failed to get pf name ret:%d", devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
 	/* check pf_priv before use it, might be null if not set */
-	priv->pf_priv = pf_priv;
-	if (!priv->pf_priv)
-		DRV_LOG(WARNING, "PF was not set");
+	priv->pf_priv = mi_ops.get_mi_by_bdf(pfname);;
+	if (!priv->pf_priv) {
+		DRV_LOG(ERR, "%s failed to get pf priv", devname);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	ret = virtio_vdpa_get_vfid(pfname, devname, &vf_id);
+	if (ret) {
+		DRV_LOG(ERR, "%s pf %s failed to get vfid ret:%d", devname, pfname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+	priv->vf_id = vf_id;
+
 	/* TO_DO: need to confirm following: */
 	priv->vfio_dev_fd = -1;
 	priv->vfio_group_fd = -1;
