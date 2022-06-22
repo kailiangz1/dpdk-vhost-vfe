@@ -357,7 +357,7 @@ static int
 virtio_vdpa_rpc_debug(const char *pf_name,
 		struct vdpa_debug_vf_info *vf_debug_info)
 {
-	const struct rte_memzone *vdpa_dp_mz = NULL;
+	static const struct rte_memzone *vdpa_dp_mz = NULL;
 	char vf_name[RTE_DEV_NAME_MAX_LEN];
 	struct virtio_vdpa_pf_priv *priv;
 	struct virtio_vdpa_priv *vf_priv;
@@ -408,7 +408,8 @@ virtio_vdpa_rpc_debug(const char *pf_name,
 				info.range_length, info.page_size, unit, info.data[0].len);
 		if(!info.data[0].len) {
 			RPC_LOG(ERR, "<<<<Invalid map len>>>>");
-			return -EINVAL;
+			ret = -EINVAL;
+			goto err_free_mz;
 		}
 	}
 
@@ -441,9 +442,11 @@ virtio_vdpa_rpc_debug(const char *pf_name,
 		}
 	}
 
-	if (vdpa_dp_mz)
+err_free_mz:
+	if (vdpa_dp_mz) {
 		rte_memzone_free(vdpa_dp_mz);
-	vdpa_dp_mz = NULL;
+		vdpa_dp_mz = NULL;
+	}
 	return ret;
 }
 #endif
