@@ -585,9 +585,9 @@ virtio_vdpa_cmd_dirty_page_start_track(struct virtio_vdpa_pf_priv *priv,
 {
 	struct virtio_admin_dirty_page_start_track_data *sd;
 	struct virtio_hw *hw = &priv->vpdev->hw;
-	struct virtio_admin_data_ctrl dat_ctrl;
 	struct virtio_admin_ctrl *ctrl;
-	int dlen[1];
+	struct virtio_admin_data_ctrl dat_ctrl;
+	int dlen[1], pkt_num = 0;
 	int ret, i;
 
 	DRV_LOG(DEBUG, ">>>>");
@@ -608,15 +608,16 @@ virtio_vdpa_cmd_dirty_page_start_track(struct virtio_vdpa_pf_priv *priv,
 	sd->vdev_host_page_size = rte_cpu_to_le_32(vdev_host_page_size);
 	sd->vdev_host_range_addr = rte_cpu_to_le_64(vdev_host_range_addr);
 	sd->range_length = rte_cpu_to_le_64(range_length);
-	dlen[0] = sizeof(*sd);
-	dat_ctrl.num_in_data = num_sges; /* for RTE_IOVA_VA only */
+	pkt_num = 1;
 	for (i = 0; i < num_sges; i++) {
-		dat_ctrl.in_data[i].iova = rte_mem_virt2iova((const void *)data[i].addr);
-		dat_ctrl.in_data[i].len = data[i].len;
+		sd->sges[i].addr = rte_cpu_to_le_64((uint64_t)rte_mem_virt2iova((const void *)data[i].addr));
+		sd->sges[i].len = rte_cpu_to_le_32(data[i].len);
 	}
+	dat_ctrl.num_in_data = 0;
 	dat_ctrl.num_out_data = 0;
+	dlen[0] = sizeof(*sd) + sizeof(struct virtio_sge) * num_sges;
 
-	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, 1);
+	ret = virtio_vdpa_send_admin_command(hw->avq, ctrl, &dat_ctrl, dlen, pkt_num);
 	if (ret) {
 		CMD_LOG(ERR, "Failed to run class %u, cmd %u, status %d, vdev id: %u",
 				ctrl->hdr.class, ctrl->hdr.cmd, ret, vdev_id);
