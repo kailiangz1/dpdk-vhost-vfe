@@ -26,6 +26,7 @@ INTERNAL {
 	virtio_pci_dev_config_read;
 	virtio_pci_dev_config_write;
 	virtio_pci_dev_state_bar_copy;
+	virtio_pci_dev_state_size_get;
 
 	local: *;
 };

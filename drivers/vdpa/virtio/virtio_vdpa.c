@@ -962,15 +962,57 @@ virtio_vdpa_get_vfid(const char *pf_name, const char *vf_name, int *vfid)
 	return -ENODEV;
 }
 
+static int
+virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
+{
+	struct virtio_vdpa_priv *priv = NULL;
+	bool found = false, ret;
+
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
+		if (priv->pdev == pci_dev) {
+			found = true;
+			TAILQ_REMOVE(&virtio_priv_list, priv, next);
+			break;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+	if (found) {
+		if (priv->configured)
+			virtio_vdpa_dev_close(priv->vid);
+
+		if (priv->vdev)
+			rte_vdpa_unregister_device(priv->vdev);
+
+		if (priv->vpdev) {
+			ret = virtio_pci_dev_interrupts_free(priv->vpdev);
+			if (ret) {
+				DRV_LOG(ERR, "Error free virtio dev interrupts: %s",
+						strerror(errno));
+			}
+		}
+
+		virtio_vdpa_queues_free(priv);
+
+		if (priv->vpdev)
+			virtio_pci_dev_free(priv->vpdev);
+
+		if (priv->state_mz)
+			rte_memzone_free(priv->state_mz);
+		rte_free(priv);
+	}
+
+	return found ? 0 : -ENODEV;
+}
+
 #define VIRTIO_VDPA_STATE_ALIGN 4096
-#define VIRTIO_VDPA_STATE_SIZE 4096
 
 static int
 virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		struct rte_pci_device *pci_dev)
 {
 	int vdpa = 0;
-	int ret, vf_id = 0;
+	int ret, vf_id = 0, state_len;
 	struct virtio_vdpa_priv *priv;
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
@@ -1002,6 +1044,8 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
+
+	priv->pdev = pci_dev;
 
 	ret = virtio_vdpa_get_pf_name(devname, pfname, sizeof(pfname));
 	if (ret) {
@@ -1054,8 +1098,6 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto error;
 	}
 
-	priv->pdev = pci_dev;
-
 	priv->vpdev = virtio_pci_dev_alloc(pci_dev);
 	if (priv->vpdev == NULL) {
 		DRV_LOG(ERR, "%s failed to alloc virito pci dev", devname);
@@ -1107,7 +1149,11 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto error;
 	}
 
-	priv->state_mz = rte_memzone_reserve_aligned(devname, VIRTIO_VDPA_STATE_SIZE,
+	state_len = virtio_pci_dev_state_size_get(priv->vpdev);
+	DRV_LOG(INFO, "%s state len:%d", devname, state_len);
+
+	priv->state_size = state_len;
+	priv->state_mz = rte_memzone_reserve_aligned(devname, state_len,
 			priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
 			VIRTIO_VDPA_STATE_ALIGN);
 	if (priv->state_mz == NULL) {
@@ -1147,46 +1193,8 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	return 0;
 
 error:
-	if (priv)
-		rte_free(priv);
+	virtio_vdpa_dev_remove(pci_dev);
 	return -rte_errno;
-}
-
-static int
-virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
-{
-	struct virtio_vdpa_priv *priv = NULL;
-	bool found = false, ret;
-
-	pthread_mutex_lock(&priv_list_lock);
-	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
-		if (priv->pdev == pci_dev) {
-			found = true;
-			TAILQ_REMOVE(&virtio_priv_list, priv, next);
-			break;
-		}
-	}
-	pthread_mutex_unlock(&priv_list_lock);
-	if (found) {
-		if (priv->configured)
-			virtio_vdpa_dev_close(priv->vid);
-
-		if (priv->vdev)
-			rte_vdpa_unregister_device(priv->vdev);
-
-		ret = virtio_pci_dev_interrupts_free(priv->vpdev);
-		if (ret) {
-			DRV_LOG(ERR, "Error free virtio dev interrupts: %s",
-					strerror(errno));
-		}
-
-		virtio_vdpa_queues_free(priv);
-		virtio_pci_dev_free(priv->vpdev);
-
-		rte_free(priv);
-	}
-
-	return found ? 0 : -ENODEV;
 }
 
 void

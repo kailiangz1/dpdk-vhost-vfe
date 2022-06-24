@@ -37,6 +37,7 @@ struct virtio_vdpa_priv {
 	struct virtio_pci_dev *vpdev;
 	const struct rte_memzone *state_mz;
 	const struct virtio_vdpa_device_callback *dev_ops;
+	int state_size;
 	int vfio_container_fd;
 	int vfio_group_fd;
 	int vfio_dev_fd;
