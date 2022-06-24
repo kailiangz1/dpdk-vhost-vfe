@@ -793,25 +793,16 @@ virtio_pci_dev_init(struct rte_pci_device *pci_dev, struct virtio_pci_dev *dev)
 		goto msix_detect;
 	}
 
-	PMD_INIT_LOG(INFO, "trying with legacy virtio pci");
-	if (rte_pci_ioport_map(pci_dev, 0, VTPCI_IO(hw)) < 0) {
-		rte_pci_unmap_device(pci_dev);
-		if (pci_dev->kdrv == RTE_PCI_KDRV_UNKNOWN &&
-		    (!pci_dev->device.devargs ||
-		     pci_dev->device.devargs->bus !=
-		     rte_bus_find_by_name("pci"))) {
-			PMD_INIT_LOG(INFO,
-				"skip kernel managed virtio device");
-			return 1;
-		}
-		return -EINVAL;
-	}
-
-	VIRTIO_OPS(hw) = &virtio_dev_pci_legacy_ops;
-	dev->modern = false;
+	PMD_INIT_LOG(ERR, "Probe fail to read caps");
+	return -EINVAL;
 
 msix_detect:
 	VIRTIO_OPS(hw)->intr_detect(hw);
+	if (dev->msix_status != VIRTIO_MSIX_ENABLED) {
+		PMD_INIT_LOG(ERR, "Dev %s MSI-X not enabled,status: %d",
+							VP_DEV_NAME(dev), dev->msix_status);
+		return -EINVAL;
+	}
 
 	return 0;
 }

@@ -286,9 +286,10 @@ virtio_vdpa_virtq_disable(struct virtio_vdpa_priv *priv, int vq_idx)
 	}
 
 	priv->configured ? virtio_pci_dev_queue_del(priv->vpdev, vq_idx) :
-					virtio_pci_dev_state_queue_del(priv->vpdev, vq_idx);
+					virtio_pci_dev_state_queue_del(priv->vpdev, vq_idx, priv->state_mz->addr);
 
-	ret = virtio_pci_dev_interrupt_disable(priv->vpdev, vq_idx + 1);
+	ret = priv->configured ? virtio_pci_dev_interrupt_disable(priv->vpdev, vq_idx + 1) :
+		virtio_pci_dev_state_interrupt_disable(priv->vpdev, vq_idx + 1, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s virtq %d interrupt disabel failed",
 						priv->vdev->device->name, vq_idx);
@@ -314,7 +315,8 @@ virtio_vdpa_virtq_enable(struct virtio_vdpa_priv *priv, int vq_idx)
 	if (ret)
 		return ret;
 
-	ret = virtio_pci_dev_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1);
+	ret = priv->configured ? virtio_pci_dev_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1) :
+		virtio_pci_dev_state_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s virtq interrupt enable failed ret:%d",
 						priv->vdev->device->name, ret);
@@ -359,7 +361,7 @@ virtio_vdpa_virtq_enable(struct virtio_vdpa_priv *priv, int vq_idx)
 	DRV_LOG(DEBUG, "Virtq %d nr_entrys:%d", vq_idx, vq.size);
 
 	ret = priv->configured ? virtio_pci_dev_queue_set(priv->vpdev, vq_idx, &vring_info) :
-					virtio_pci_dev_state_queue_set(priv->vpdev, vq_idx, &vring_info);
+		virtio_pci_dev_state_queue_set(priv->vpdev, vq_idx, &vring_info, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s setup_queue failed", priv->vdev->device->name);
 		return -EINVAL;
@@ -557,7 +559,7 @@ virtio_vdpa_features_set(int vid)
 	if (priv->configured)
 		priv->guest_features = virtio_pci_dev_features_set(priv->vpdev, features);
 	else
-		priv->guest_features = virtio_pci_dev_state_features_set(priv->vpdev, features);
+		priv->guest_features = virtio_pci_dev_state_features_set(priv->vpdev, features, priv->state_mz->addr);
 
 	DRV_LOG(INFO, "%s vid %d guest feature is %" PRIx64 "orign feature is %" PRIx64,
 					priv->vdev->device->name, vid,
@@ -650,7 +652,7 @@ virtio_vdpa_dev_config(int vid)
 	}
 
 	fd = rte_intr_fd_get(priv->pdev->intr_handle);
-	ret = virtio_pci_dev_interrupt_enable(priv->vpdev, fd, 0);
+	ret = virtio_pci_dev_state_interrupt_enable(priv->vpdev, fd, 0, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s error enabling virtio dev interrupts: %d(%s)",
 				vdev->device->name, ret, strerror(errno));

@@ -11,6 +11,7 @@
 #include "virtio_api.h"
 #include "virtqueue.h"
 #include "virtio_logs.h"
+#include "virtio_pci_state.h"
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE   (sysconf(_SC_PAGESIZE))
@@ -167,14 +168,17 @@ virtio_pci_dev_state_features_get(struct virtio_pci_dev *vpdev, uint64_t *featur
 }
 
 uint64_t
-virtio_pci_dev_state_features_set(struct virtio_pci_dev *vpdev, uint64_t features)
+virtio_pci_dev_state_features_set(struct virtio_pci_dev *vpdev, uint64_t features, void *state)
 {
 	struct virtio_hw *hw;
 	uint64_t hw_features;
+	struct virtio_dev_common_state *state_info = state;
 
 	hw = &vpdev->hw;
 	hw_features = hw->device_features;
 	features &= hw_features;
+
+	state_info->common_cfg.driver_feature = rte_cpu_to_le_64(features);
 
 	hw->guest_features = features;
 	return features;
@@ -209,10 +213,11 @@ virtio_pci_dev_notify_area_get(struct virtio_pci_dev *vpdev,
 
 int
 virtio_pci_dev_state_queue_set(struct virtio_pci_dev *vpdev,
-								   uint16_t qid, const struct virtio_pci_dev_vring_info *vring_info)
+								   uint16_t qid, const struct virtio_pci_dev_vring_info *vring_info, void *state)
 {
 	struct virtio_hw *hw;
 	struct virtqueue *hw_vq;
+	struct virtio_dev_queue_info *q_info;
 	unsigned int size;
 
 	hw = &vpdev->hw;
@@ -224,13 +229,25 @@ virtio_pci_dev_state_queue_set(struct virtio_pci_dev *vpdev,
 	size = vring_size(hw, vring_info->size, VIRTIO_VRING_ALIGN);
 	hw_vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_VRING_ALIGN);
 
+	q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+	q_info[qid].q_cfg.queue_size = rte_cpu_to_le_16(vring_info->size);
+	q_info[qid].q_cfg.queue_enable = rte_cpu_to_le_16(1);
+	q_info[qid].q_cfg.queue_desc = rte_cpu_to_le_64(vring_info->desc);
+	q_info[qid].q_cfg.queue_driver = rte_cpu_to_le_64(vring_info->avail);
+	q_info[qid].q_cfg.queue_device = rte_cpu_to_le_64(vring_info->used);
+
 	return 0;
 }
 
 void
-virtio_pci_dev_state_queue_del(struct virtio_pci_dev *vpdev, uint16_t qid)
+virtio_pci_dev_state_queue_del(struct virtio_pci_dev *vpdev, uint16_t qid, void *state)
 {
+	struct virtio_hw *hw;
+	struct virtio_dev_queue_info *q_info;
 
+	hw = &vpdev->hw;
+	q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+	q_info[qid].q_cfg.queue_enable = rte_cpu_to_le_16(0);
 }
 
 int
@@ -336,6 +353,85 @@ virtio_pci_dev_interrupts_free(struct virtio_pci_dev *vpdev)
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Dev %s free MSI-X interrupts: %s", VP_DEV_NAME(vpdev), strerror(errno));
 		return ret;
+	}
+
+	return 0;
+}
+
+int
+virtio_pci_dev_state_interrupt_enable(struct virtio_pci_dev *vpdev, int fd, int vec, void *state)
+{
+	struct virtio_hw *hw = &vpdev->hw;
+	struct vfio_irq_set *irq_set;
+	struct virtio_dev_queue_info *q_info;
+	struct virtio_dev_common_state *state_info;
+	int ret;
+
+	irq_set = rte_zmalloc(NULL, (sizeof(struct vfio_irq_set) + sizeof(int)), 0);
+	if (irq_set == NULL) {
+		PMD_INIT_LOG(ERR, "Dev %s malloc fail", VP_DEV_NAME(vpdev));
+		return -ENOMEM;
+	}
+	irq_set->argsz = sizeof(struct vfio_irq_set) + sizeof(int);
+	irq_set->count = 1;
+	irq_set->flags = VFIO_IRQ_SET_DATA_EVENTFD |
+			 VFIO_IRQ_SET_ACTION_TRIGGER;
+	irq_set->index = VFIO_PCI_MSIX_IRQ_INDEX;
+	irq_set->start = vec;
+	*(int *)&irq_set->data = fd;
+
+	ret = ioctl(vpdev->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+	rte_free(irq_set);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Dev %s enabling MSI-X: %s", VP_DEV_NAME(vpdev), strerror(errno));
+		return ret;
+	}
+
+	if (vec == 0) {
+		state_info = state;
+		state_info->common_cfg.msix_config = 0;
+	} else {
+		q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+		q_info[vec-1].q_cfg.queue_msix_vector = rte_cpu_to_le_16(vec);
+	}
+	return 0;
+}
+
+int
+virtio_pci_dev_state_interrupt_disable(struct virtio_pci_dev *vpdev, int vec, void *state)
+{
+	struct virtio_hw *hw = &vpdev->hw;
+	struct vfio_irq_set *irq_set;
+	struct virtio_dev_queue_info *q_info;
+	struct virtio_dev_common_state *state_info;
+	int ret;
+
+	irq_set = rte_zmalloc(NULL, (sizeof(struct vfio_irq_set) + sizeof(int)), 0);
+	if (irq_set == NULL) {
+		PMD_INIT_LOG(ERR, "Dev %s malloc fail", VP_DEV_NAME(vpdev));
+		return -ENOMEM;
+	}
+	irq_set->argsz = sizeof(struct vfio_irq_set) + sizeof(int);
+	irq_set->count = 1;
+	irq_set->flags = VFIO_IRQ_SET_DATA_EVENTFD |
+			 VFIO_IRQ_SET_ACTION_TRIGGER;
+	irq_set->index = VFIO_PCI_MSIX_IRQ_INDEX;
+	irq_set->start = vec;
+	*(int *)&irq_set->data = VFIO_FD_INVALID;
+
+	ret = ioctl(vpdev->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+	rte_free(irq_set);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Dev %s disabling MSI-X: %s", VP_DEV_NAME(vpdev), strerror(errno));
+		return ret;
+	}
+
+	if (vec == 0) {
+		state_info = state;
+		state_info->common_cfg.msix_config = rte_cpu_to_le_16(VIRTIO_MSI_NO_VECTOR);
+	} else {
+		q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+		q_info[vec-1].q_cfg.queue_msix_vector = rte_cpu_to_le_16(VIRTIO_MSI_NO_VECTOR);
 	}
 
 	return 0;
