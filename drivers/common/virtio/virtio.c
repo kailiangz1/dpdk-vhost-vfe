@@ -210,6 +210,75 @@ virtio_pci_dev_notify_area_get(struct virtio_pci_dev *vpdev,
 	return 0;
 
 }
+void
+virtio_pci_dev_state_all_queues_disable(struct virtio_pci_dev *vpdev, void *state)
+{
+	struct virtio_hw *hw;
+	struct virtio_dev_queue_info *q_info;
+	uint16_t qid;
+
+	hw = &vpdev->hw;
+	q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+
+	for(qid = 0; qid < hw->num_queues; qid++) {
+		q_info[qid].q_cfg.queue_enable = 0;
+	}
+}
+
+void
+virtio_pci_dev_state_dev_status_set(void *state, uint8_t dev_status)
+{
+	struct virtio_dev_common_state *state_info = state;
+
+	state_info->common_cfg.device_status = dev_status;
+}
+int
+virtio_pci_dev_state_hw_idx_get(void *state,
+											struct virtio_dev_run_state_info *hw_idx_info,
+											int num_queues)
+{
+	struct virtio_dev_state_hdr *hdr;
+	struct virtio_field_hdr *f_hdr;
+	struct virtio_dev_split_q_run_state *tmp_hw_idx;
+	uint16_t qid;
+	uint32_t field_cnt;
+
+	hdr = state;
+	field_cnt = rte_le_to_cpu_32(hdr->virtio_field_count);
+
+	f_hdr = (struct virtio_field_hdr *)(hdr + 1);
+	while(field_cnt) {
+		if (rte_le_to_cpu_32(f_hdr->type) == VIRTIO_DEV_SPLIT_Q_RUN_STATE) {
+			tmp_hw_idx = (struct virtio_dev_split_q_run_state *)(f_hdr + 1);
+			qid = rte_le_to_cpu_16(tmp_hw_idx->queue_index);
+			if (qid < num_queues) {
+				hw_idx_info[qid].flag = true;
+				hw_idx_info[qid].last_avail_idx = rte_le_to_cpu_16(tmp_hw_idx->last_avail_idx);
+				hw_idx_info[qid].last_used_idx = rte_le_to_cpu_16(tmp_hw_idx->last_used_idx);
+			}
+		}
+		f_hdr = (struct virtio_field_hdr *)((uint8_t *)(f_hdr + 1) + rte_le_to_cpu_32(f_hdr->size));
+		field_cnt--;
+	}
+
+	return 0;
+}
+
+int
+virtio_pci_dev_state_hw_idx_set(struct virtio_pci_dev *vpdev, uint16_t qid, uint16_t last_avail_idx,
+											uint16_t last_used_idx, void *state)
+{
+	struct virtio_hw *hw;
+	struct virtio_dev_queue_info *q_info;
+
+	hw = &vpdev->hw;
+
+	q_info = hw->virtio_dev_sp_ops->get_queue_offset(state);
+	q_info[qid].q_run_state.last_avail_idx = rte_cpu_to_le_16(last_avail_idx);
+	q_info[qid].q_run_state.last_used_idx = rte_cpu_to_le_16(last_used_idx);
+
+	return 0;
+}
 
 int
 virtio_pci_dev_state_queue_set(struct virtio_pci_dev *vpdev,
