@@ -577,6 +577,7 @@ virtio_vdpa_dev_close(int vid)
 		virtio_vdpa_find_priv_resource_by_vdev(vdev);
 	struct virtio_dev_run_state_info *tmp_hw_idx;
 	rte_iova_t *remote_state_size;
+	char mz_name[RTE_MEMZONE_NAMESIZE];
 	uint16_t num_vr;
 	int ret, i;
 
@@ -612,7 +613,14 @@ virtio_vdpa_dev_close(int vid)
 	/* If pre allocated memzone is small, we will realloc */
 	if (*remote_state_size > VIRTIO_VDPA_REMOTE_STATE_DEFAULT_SIZE) {
 		rte_memzone_free(priv->state_mz_remote);
-		priv->state_mz_remote = rte_memzone_reserve_aligned(vdev->device->name,
+
+		ret = snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "%s_remote_mz", vdev->device->name);
+		if (ret < 0 || ret >= RTE_MEMZONE_NAMESIZE) {
+			DRV_LOG(ERR, "%s remote mem zone print fail ret:%d", vdev->device->name, ret);
+			return -EINVAL;
+		}
+
+		priv->state_mz_remote = rte_memzone_reserve_aligned(mz_name,
 										*remote_state_size,
 										priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
 										VIRTIO_VDPA_STATE_ALIGN);
@@ -1166,6 +1174,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
 	char pfname[RTE_DEV_NAME_MAX_LEN] = {0};
+	char mz_name[RTE_MEMZONE_NAMESIZE];
 	int iommu_group_num;
 	size_t mz_len;
 
@@ -1341,7 +1350,15 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	priv->lm_status = VIRTIO_S_FREEZED;
 
 	/* Init remote state mz */
-	priv->state_mz_remote = rte_memzone_reserve_aligned(devname,
+
+	ret = snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "%s_remote_mz", devname);
+	if (ret < 0 || ret >= RTE_MEMZONE_NAMESIZE) {
+		DRV_LOG(ERR, "%s remote mem zone print fail ret:%d", devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	priv->state_mz_remote = rte_memzone_reserve_aligned(mz_name,
 			VIRTIO_VDPA_REMOTE_STATE_DEFAULT_SIZE,
 			priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
 			VIRTIO_VDPA_STATE_ALIGN);

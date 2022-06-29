@@ -798,12 +798,6 @@ virtio_pci_dev_init(struct rte_pci_device *pci_dev, struct virtio_pci_dev *dev)
 
 msix_detect:
 	VIRTIO_OPS(hw)->intr_detect(hw);
-	if (dev->msix_status != VIRTIO_MSIX_ENABLED) {
-		PMD_INIT_LOG(ERR, "Dev %s MSI-X not enabled,status: %d",
-							VP_DEV_NAME(dev), dev->msix_status);
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
