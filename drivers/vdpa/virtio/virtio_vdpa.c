@@ -875,8 +875,9 @@ virtio_vdpa_dev_config_get(int vid ,uint8_t *payload, uint32_t len)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -EINVAL;
 	}
-	virtio_pci_dev_config_read(priv->vpdev, 0, payload, len);
-	DRV_LOG(INFO, "vDPA device %d get config len %d", vid,len);
+	priv->configured ? virtio_pci_dev_config_read(priv->vpdev, 0, payload, len) :
+					virtio_pci_dev_state_config_read(priv->vpdev, payload, len, priv->state_mz->addr);
+	DRV_LOG(INFO, "vDPA device %d get config len %d", vid, len);
 
 	return 0;
 }

@@ -745,6 +745,23 @@ virtio_pci_dev_reset(struct virtio_pci_dev *vpdev)
 }
 
 void
+virtio_pci_dev_state_config_read(struct virtio_pci_dev *vpdev, void *dst, int length, void *state)
+{
+	struct virtio_hw *hw = &vpdev->hw;
+	struct virtio_dev_common_state *state_info = state;
+	uint16_t dev_cfg_len;
+
+	dev_cfg_len = hw->virtio_dev_sp_ops->get_dev_cfg_size();
+
+	if (length < dev_cfg_len) {
+		PMD_INIT_LOG(INFO, "vpdev %s dev cfg len %d < cfg len %d", VP_DEV_NAME(vpdev), length, dev_cfg_len);
+	}
+	rte_memcpy(dst, state_info + 1, RTE_MIN(length, dev_cfg_len));
+
+	PMD_INIT_LOG(INFO, "vpdev %s dev cfg copy len: %d", VP_DEV_NAME(vpdev), RTE_MIN(length, dev_cfg_len));
+}
+
+void
 virtio_pci_dev_config_read(struct virtio_pci_dev *vpdev, size_t offset,
 		      void *dst, int length)
 {
