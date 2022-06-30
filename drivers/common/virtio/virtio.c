@@ -232,8 +232,109 @@ virtio_pci_dev_state_dev_status_set(void *state, uint8_t dev_status)
 
 	state_info->common_cfg.device_status = dev_status;
 }
+void
+virtio_pci_dev_state_dump(struct virtio_pci_dev *vpdev, void *state, uint32_t state_size)
+{
+	struct virtio_dev_state_hdr *hdr;
+	struct virtio_hw *hw;
+	struct virtio_field_hdr *f_hdr;
+	struct virtio_dev_split_q_run_state *tmp_hw_idx;
+	struct virtio_pci_state_common_cfg *common_cfg;
+	struct virtio_dev_q_cfg *tmp_q_cfg;
+	uint32_t field_cnt, *tmp, *tmp_start;
+
+	hw = &vpdev->hw;
+
+	hdr = state;
+	field_cnt = rte_le_to_cpu_32(hdr->virtio_field_count);
+
+	PMD_DUMP_LOG(INFO, "--------------state dump start--------------\r\n");
+	PMD_DUMP_LOG(INFO, "state field cnt:%d size:%d\r\n", field_cnt, state_size);
+	f_hdr = (struct virtio_field_hdr *)(hdr + 1);
+	while(field_cnt) {
+		switch (rte_le_to_cpu_32(f_hdr->type)) {
+			case VIRTIO_DEV_PCI_COMMON_CFG:
+				common_cfg = (struct virtio_pci_state_common_cfg *)(f_hdr + 1);
+				PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_PCI_COMMON_CFG, size:%d bytes \n", f_hdr->size);
+				if (f_hdr->size < sizeof(struct virtio_pci_state_common_cfg)) {
+					PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_PCI_COMMON_CFG is truncated\n");
+					break;
+				}
+				PMD_DUMP_LOG(INFO, ">>> dev_ftr_sel: %d dev_ftrs: 0x%lx drv_ftr_sel: %d drv_ftrs: 0x%lx msi_x: 0x%0x num_queues: %d queue_select: %d status: 0x%0x config_gen: %d\n",
+									rte_le_to_cpu_32(common_cfg->device_feature_select),
+									rte_le_to_cpu_64(common_cfg->device_feature),
+									rte_le_to_cpu_32(common_cfg->driver_feature_select),
+									rte_le_to_cpu_64(common_cfg->driver_feature),
+									rte_le_to_cpu_16(common_cfg->msix_config),
+									rte_le_to_cpu_16(common_cfg->num_queues),
+									rte_le_to_cpu_16(common_cfg->queue_select),
+									common_cfg->device_status,
+									common_cfg->config_generation);
+				break;
+			case VIRTIO_DEV_SPLIT_Q_RUN_STATE:
+				tmp_hw_idx = (struct virtio_dev_split_q_run_state *)(f_hdr + 1);
+				PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_SPLIT_Q_RUN_STATE, size:%d bytes \n", f_hdr->size);
+				if (f_hdr->size < sizeof(struct virtio_dev_split_q_run_state)) {
+					PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_SPLIT_Q_RUN_STATE is truncated\n");
+					break;
+				}
+				PMD_DUMP_LOG(INFO, ">>> qid:%d hw_avail_idx: %d hw_used_idx: %d\r\n",
+									rte_le_to_cpu_16(tmp_hw_idx->queue_index),
+									rte_le_to_cpu_16(tmp_hw_idx->last_avail_idx),
+									rte_le_to_cpu_16(tmp_hw_idx->last_used_idx));
+				break;
+			case VIRTIO_DEV_QUEUE_CFG:
+				tmp_q_cfg = (struct virtio_dev_q_cfg *)(f_hdr + 1);
+				PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_QUEUE_CFG, size:%d bytes \n", f_hdr->size);
+				if (f_hdr->size < sizeof(struct virtio_dev_q_cfg)) {
+					PMD_DUMP_LOG(INFO, ">> VIRTIO_DEV_QUEUE_CFG is truncated\n");
+					break;
+				}
+				PMD_DUMP_LOG(INFO, ">>> qid:%d size: %d msix: %d enable: %d notify_offset: %d desc 0x%lx driver 0x%lx device 0x%lx notify data: %d reset: %d\r\n",
+									rte_le_to_cpu_16(tmp_q_cfg->queue_index),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_size),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_msix_vector),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_enable),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_notify_off),
+									rte_le_to_cpu_64(tmp_q_cfg->queue_desc),
+									rte_le_to_cpu_64(tmp_q_cfg->queue_driver),
+									rte_le_to_cpu_64(tmp_q_cfg->queue_device),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_notify_data),
+									rte_le_to_cpu_16(tmp_q_cfg->queue_reset));
+				break;
+			case VIRTIO_DEV_CFG_SPACE:
+				hw->virtio_dev_sp_ops->dev_cfg_dump(f_hdr);
+				break;
+			default:
+				PMD_DUMP_LOG(INFO, ">> %d type, size:%d bytes \n", rte_le_to_cpu_32(f_hdr->type), f_hdr->size);
+				tmp_start = (uint32_t *)(f_hdr + 1);
+				tmp = tmp_start;
+				if (((uint8_t *)tmp_start + f_hdr->size) > ((uint8_t *)state + state_size)) {
+					PMD_DUMP_LOG(ERR, "Pointer f_hdr exceed!\r\n");
+					return;
+				}
+				PMD_DUMP_LOG(INFO, ">>>");
+				while ((tmp - tmp_start) < f_hdr->size) {
+					PMD_DUMP_LOG(INFO, " %x", *tmp);
+					tmp++;
+				}
+				PMD_DUMP_LOG(INFO, "\n");
+				break;
+		}
+		f_hdr = (struct virtio_field_hdr *)((uint8_t *)(f_hdr + 1) + rte_le_to_cpu_32(f_hdr->size));
+		field_cnt--;
+
+		if ((uint8_t *)f_hdr > ((uint8_t *)state + state_size)) {
+			PMD_DUMP_LOG(ERR, "Pointer exceed!\r\n");
+			return;
+		}
+	}
+
+	PMD_DUMP_LOG(INFO, "--------------state dump end--------------\r\n");
+
+}
 int
-virtio_pci_dev_state_hw_idx_get(void *state,
+virtio_pci_dev_state_hw_idx_get(void *state, uint32_t state_size,
 											struct virtio_dev_run_state_info *hw_idx_info,
 											int num_queues)
 {
@@ -249,6 +350,11 @@ virtio_pci_dev_state_hw_idx_get(void *state,
 	f_hdr = (struct virtio_field_hdr *)(hdr + 1);
 	while(field_cnt) {
 		if (rte_le_to_cpu_32(f_hdr->type) == VIRTIO_DEV_SPLIT_Q_RUN_STATE) {
+			if (f_hdr->size < sizeof(struct virtio_dev_split_q_run_state)) {
+				PMD_INIT_LOG(ERR, "State is truncated, size: %d \n", f_hdr->size);
+				return -EINVAL;
+			}
+
 			tmp_hw_idx = (struct virtio_dev_split_q_run_state *)(f_hdr + 1);
 			qid = rte_le_to_cpu_16(tmp_hw_idx->queue_index);
 			if (qid < num_queues) {
@@ -258,6 +364,10 @@ virtio_pci_dev_state_hw_idx_get(void *state,
 			}
 		}
 		f_hdr = (struct virtio_field_hdr *)((uint8_t *)(f_hdr + 1) + rte_le_to_cpu_32(f_hdr->size));
+		if (((uint8_t *)f_hdr - (uint8_t *)state) > state_size) {
+			PMD_INIT_LOG(ERR, "TLV exceed state size, tlv:%p state:%p size:%d\n", f_hdr, state, state_size);
+			return -EINVAL;
+		}
 		field_cnt--;
 	}
 

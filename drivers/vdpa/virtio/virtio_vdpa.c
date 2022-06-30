@@ -635,6 +635,8 @@ virtio_vdpa_dev_close(int vid)
 		return -EINVAL;
 	}
 
+	DRV_LOG(INFO, "Dev:%s pending bytes is 0x%" PRIx64, vdev->device->name, *remote_state_size);
+
 	/*save*/
 	ret = mi_ops.lm_cmd_save_state(priv->pf_priv, priv->vf_id, 0,
 								*remote_state_size,
@@ -645,10 +647,11 @@ virtio_vdpa_dev_close(int vid)
 		return ret;
 	}
 
+	virtio_pci_dev_state_dump(priv->vpdev ,priv->state_mz_remote->addr, *remote_state_size);
 	num_vr = rte_vhost_get_vring_num(vid);
 	tmp_hw_idx = rte_zmalloc(NULL, num_vr * sizeof(struct virtio_dev_run_state_info), 0);
 
-	ret = virtio_pci_dev_state_hw_idx_get(priv->state_mz_remote->addr, tmp_hw_idx, num_vr);
+	ret = virtio_pci_dev_state_hw_idx_get(priv->state_mz_remote->addr, *remote_state_size, tmp_hw_idx, num_vr);
 	if (ret) {
 		rte_free(tmp_hw_idx);
 		DRV_LOG(ERR, "%s vfid %d failed get hwidx ret:%d", vdev->device->name, priv->vf_id, ret);
@@ -774,6 +777,8 @@ virtio_vdpa_dev_config(int vid)
 													VIRTIO_CONFIG_STATUS_DRIVER |
 													VIRTIO_CONFIG_STATUS_FEATURES_OK |
 													VIRTIO_CONFIG_STATUS_DRIVER_OK);
+
+	virtio_pci_dev_state_dump(priv->vpdev , priv->state_mz->addr, priv->state_size);
 
 	ret = mi_ops.lm_cmd_restore_state(priv->pf_priv, priv->vf_id, 0, priv->state_size, priv->state_mz->iova);
 	if (ret) {
@@ -1330,6 +1335,8 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_errno = rte_errno ? rte_errno : EINVAL;
 		goto error;
 	}
+
+	virtio_pci_dev_state_dump(priv->vpdev, priv->state_mz->addr, state_len);
 
 	ret = mi_ops.lm_cmd_suspend(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
 	if (ret) {

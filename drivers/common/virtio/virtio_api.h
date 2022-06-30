@@ -62,11 +62,13 @@ void virtio_pci_dev_queue_del(struct virtio_pci_dev *vpdev, uint16_t qid);
 __rte_internal
 void virtio_pci_dev_state_dev_status_set(void *state, uint8_t dev_status);
 __rte_internal
+void virtio_pci_dev_state_dump(struct virtio_pci_dev *vpdev, void *state, uint32_t state_size);
+__rte_internal
 void virtio_pci_dev_state_all_queues_disable(struct virtio_pci_dev *vpdev, void *state);
 __rte_internal
 int virtio_pci_dev_state_hw_idx_set(struct virtio_pci_dev *vpdev, uint16_t qid, uint16_t last_avail_idx, uint16_t last_used_idx, void *state);
 __rte_internal
-int virtio_pci_dev_state_hw_idx_get(void *state, struct virtio_dev_run_state_info *hw_idx_info, int num_queues);
+int virtio_pci_dev_state_hw_idx_get(void *state, uint32_t state_size, struct virtio_dev_run_state_info *hw_idx_info, int num_queues);
 __rte_internal
 int virtio_pci_dev_state_queue_set(struct virtio_pci_dev *vpdev, uint16_t qid, const struct virtio_pci_dev_vring_info *vring_info, void *state);
 __rte_internal

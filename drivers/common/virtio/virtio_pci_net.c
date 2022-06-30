@@ -70,9 +70,31 @@ modern_net_get_state_size(uint16_t num_queues)
 			num_queues * sizeof(struct virtio_dev_queue_info);
 }
 
+static void
+modern_net_dev_cfg_dump(void *f_hdr)
+{
+	struct virtio_field_hdr *tmp_f_hdr= f_hdr;
+	const struct virtio_net_config *dev_cfg;
+
+	if (tmp_f_hdr->size < sizeof(struct virtio_net_config)) {
+		PMD_DUMP_LOG(ERR, ">> net_config: state is truncated (%d < %lu)\n",
+					tmp_f_hdr->size,
+					sizeof(struct virtio_net_config));
+		return;
+	}
+
+	dev_cfg = (struct virtio_net_config *)(tmp_f_hdr + 1);
+	PMD_DUMP_LOG(INFO, ">> virtio_net_config, size:%d bytes \n", tmp_f_hdr->size);
+
+	PMD_DUMP_LOG(INFO, ">>> mac: %02X:%02X:%02X:%02X:%02X:%02X status: 0x%x max_virtqueue_pairs: 0x%x mtu: 0x%x\n",
+		  dev_cfg->mac[5], dev_cfg->mac[4], dev_cfg->mac[3], dev_cfg->mac[2], dev_cfg->mac[1], dev_cfg->mac[0],
+		  dev_cfg->status, dev_cfg->max_virtqueue_pairs, dev_cfg->mtu);
+}
+
 const struct virtio_dev_specific_ops virtio_net_dev_pci_modern_ops = {
 	.get_queue_num = modern_net_get_queue_num,
 	.get_dev_cfg_size = modern_net_get_dev_cfg_size,
 	.get_queue_offset = modern_net_get_queue_offset,
 	.get_state_size = modern_net_get_state_size,
+	.dev_cfg_dump = modern_net_dev_cfg_dump,
 };
