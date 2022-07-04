@@ -110,6 +110,9 @@ virtio_vdpa_used_vring_addr_get(struct virtio_vdpa_priv *priv, int qix,
 		uint64_t *used_vring_addr, uint32_t *used_vring_len);
 
 __rte_internal int
+virtio_vdpa_max_phy_addr_get(struct virtio_vdpa_priv *priv, uint64_t *phy_addr);
+
+__rte_internal int
 virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix,
 		uint64_t *desc_addr, uint32_t *desc_len);
 #endif

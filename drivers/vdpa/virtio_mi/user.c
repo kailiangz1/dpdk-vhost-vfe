@@ -278,7 +278,7 @@ virtio_vdpa_rpc_get_vf_info(const char *pf_name, uint32_t vfid,
 
 #ifdef RTE_LIBRTE_VDPA_DEBUG
 #define VIRTIO_VDPA_DEBUG_PAGE_SIZE (4096)
-#define VIRTIO_VDPA_DEBUG_MZONE_LEN (4*1024*1024)
+#define VIRTIO_VDPA_DEBUG_MZONE_LEN (32*1024*1024)
 
 static inline unsigned int
 log2above(unsigned int v)
@@ -361,8 +361,9 @@ virtio_vdpa_rpc_debug(const char *pf_name,
 	char vf_name[RTE_DEV_NAME_MAX_LEN];
 	struct virtio_vdpa_pf_priv *priv;
 	struct virtio_vdpa_priv *vf_priv;
-	struct vdpa_debug_info info;
+	static struct vdpa_debug_info info;
 	uint16_t queue_num;
+	uint64_t max_phy_addr;
 	int ret, i;
 
 	if (!pf_name || !vf_debug_info)
@@ -394,10 +395,19 @@ virtio_vdpa_rpc_debug(const char *pf_name,
 			RTE_VERIFY(vdpa_dp_mz);
 		}
 
+		vf_priv = virtio_vdpa_find_priv_resource_by_name(vf_name);
+		RTE_VERIFY(vf_priv);
+
+		ret = virtio_vdpa_max_phy_addr_get(vf_priv, &max_phy_addr);
+		if (ret) {
+			RPC_LOG(ERR, "<<<<Max phy addr get error ret:%d>>>>", ret);
+			return ret;
+		}
+
 		info.track_mode = vf_debug_info->test_mode;
 		info.page_size = VIRTIO_VDPA_DEBUG_PAGE_SIZE;
 		info.range_addr = 0;
-		info.range_length = vf_debug_info->mem_size;
+		info.range_length = max_phy_addr;
 		if ((info.track_mode == VIRTIO_M_DIRTY_TRACK_PUSH_BITMAP ||
 				info.track_mode == VIRTIO_M_DIRTY_TRACK_PULL_BITMAP))
 			unit = 8;
@@ -420,26 +430,30 @@ virtio_vdpa_rpc_debug(const char *pf_name,
 	vf_priv = virtio_vdpa_find_priv_resource_by_name(vf_name);
 	RTE_VERIFY(vf_priv);
 	queue_num = virtio_vdpa_dev_nr_vq_get(vf_priv);
+	queue_num = 1;
 	for (i = 0; i < queue_num; i++) {
 		uint64_t dirty_addr;
 		uint32_t dirty_len;
 		ret = 0;
 
 		if (!virtio_vdpa_dirty_desc_get(vf_priv, i, &dirty_addr, &dirty_len)) {
+			RPC_LOG(DEBUG,"last desc dirty_addr %" PRIu64 " dirty_len %d", dirty_addr, dirty_len);
 			ret = virtio_vdpa_rpc_check_dirty_logging(dirty_addr, dirty_len,
 					vdpa_dp_mz->addr, info.data[0].len,
 					info.track_mode, info.page_size);
 			if (ret)
 				break;
 		}
-
+		RPC_LOG(DEBUG, "desc check pass");
 		if (!virtio_vdpa_used_vring_addr_get(vf_priv, i, &dirty_addr, &dirty_len)) {
+			RPC_LOG(DEBUG,"used ring dirty_addr %" PRIu64 " dirty_len %d", dirty_addr, dirty_len);
 			ret = virtio_vdpa_rpc_check_dirty_logging(dirty_addr, dirty_len,
 					vdpa_dp_mz->addr, info.data[0].len,
 					info.track_mode, info.page_size);
 			if (ret)
 				break;
 		}
+		RPC_LOG(DEBUG, "used check pass");
 	}
 
 err_free_mz:

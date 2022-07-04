@@ -115,7 +115,7 @@ int virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix, uint64_t 
 
 	desc_id = vq.used->ring[vq.used->idx].id;
 	*desc_addr = vq.desc[desc_id].addr;
-	*desc_len = vq.used->ring[vq.used->idx].len;
+	*desc_len = vq.desc[desc_id].len;
 	return 0;
 }
 
@@ -125,6 +125,43 @@ int virtio_vdpa_used_vring_addr_get(struct virtio_vdpa_priv *priv, int qix, uint
 	*used_vring_len = sizeof(struct vring_used);
 	return 0;
 }
+
+int virtio_vdpa_max_phy_addr_get(struct virtio_vdpa_priv *priv, uint64_t *phy_addr)
+{
+	struct rte_vhost_memory *mem = NULL;
+	struct rte_vhost_mem_region *reg;
+	int ret;
+	uint32_t i = 0;
+
+	if (priv == NULL) {
+		DRV_LOG(ERR, "Invalid priv device");
+		return -ENODEV;
+	}
+
+	*phy_addr = 0;
+	ret = rte_vhost_get_mem_table(priv->vid, &mem);
+	if (ret < 0) {
+		DRV_LOG(ERR, "%s failed to get VM memory layout ret:%d",
+					priv->vdev->device->name, ret);
+		return ret;
+	}
+
+	for (i = 0; i < mem->nregions; i++) {
+		reg = &mem->regions[i];
+		DRV_LOG(INFO, "%s, region %u: HVA 0x%" PRIx64 ", "
+			"GPA 0x%" PRIx64 ", size 0x%" PRIx64 ".",
+			"DMA map", i,
+			reg->host_user_addr, reg->guest_phys_addr, reg->size);
+
+		if (*phy_addr < reg->guest_phys_addr + reg->size)
+			*phy_addr = reg->guest_phys_addr + reg->size;
+	}
+
+	DRV_LOG(INFO, "Max phy addr is 0x%" PRIx64, *phy_addr);
+	free(mem);
+	return 0;
+}
+
 #endif
 
 static int
@@ -156,6 +193,7 @@ virtio_vdpa_features_get(struct rte_vdpa_device *vdev, uint64_t *features)
 
 	virtio_pci_dev_features_get(priv->vpdev, features);
 	*features |= (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
+	*features |= (1ULL << VHOST_F_LOG_ALL);
 
 	return 0;
 }
