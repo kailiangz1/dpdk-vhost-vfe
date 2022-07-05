@@ -101,10 +101,39 @@ virtio_vdpa_find_priv_resource_by_name(const char *vf_name)
 	return priv;
 }
 
-int virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix, uint64_t *desc_addr, uint32_t *desc_len)
+static uint64_t
+virtio_vdpa_gpa_to_hva(int vid, uint64_t gpa)
+{
+	struct rte_vhost_memory *mem = NULL;
+	struct rte_vhost_mem_region *reg;
+	uint32_t i;
+	uint64_t hva = 0;
+
+	if (rte_vhost_get_mem_table(vid, &mem) < 0) {
+		if (mem)
+			free(mem);
+		DRV_LOG(ERR, "Virtio dev %d get mem table fail", vid);
+		return 0;
+	}
+
+	for (i = 0; i < mem->nregions; i++) {
+		reg = &mem->regions[i];
+
+		if (gpa >= reg->guest_phys_addr &&
+				gpa < reg->guest_phys_addr + reg->size) {
+			hva = gpa - reg->guest_phys_addr + reg->host_user_addr;
+			break;
+		}
+	}
+
+	free(mem);
+	return hva;
+}
+
+int virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix, uint64_t *desc_addr, uint32_t *write_len)
 {
 	struct rte_vhost_vring vq;
-	uint32_t desc_id;
+	uint32_t desc_id, desc_len;
 	int ret;
 
 	ret = rte_vhost_get_vhost_vring(priv->vid, qix, &vq);
@@ -113,9 +142,33 @@ int virtio_vdpa_dirty_desc_get(struct virtio_vdpa_priv *priv, int qix, uint64_t 
 		return -ENODEV;
 	}
 
-	desc_id = vq.used->ring[vq.used->idx].id;
+	desc_id = vq.used->ring[(vq.used->idx -1) & (vq.size -1)].id;
 	*desc_addr = vq.desc[desc_id].addr;
-	*desc_len = vq.desc[desc_id].len;
+	*write_len = vq.used->ring[(vq.used->idx -1) & (vq.size -1)].len;
+
+	if (priv->pdev->id.device_id == VIRTIO_PCI_MODERN_DEVICEID_BLK) {
+		struct virtio_blk_outhdr *blk_hdr;
+
+		desc_len = vq.desc[desc_id].len;
+
+		blk_hdr = (struct virtio_blk_outhdr *)virtio_vdpa_gpa_to_hva(priv->vid, *desc_addr);
+		if (blk_hdr->type != VIRTIO_BLK_T_IN) {
+			DRV_LOG(ERR, "Vf: %s qix:%d last desc is not read", priv->vdev->device->name, qix);
+			return -EINVAL;
+		}
+		if (desc_len > sizeof(struct virtio_blk_outhdr)) {
+			*desc_addr = *desc_addr + sizeof(struct virtio_blk_outhdr);
+		} else {
+			if (!(vq.desc[desc_id].flags & VRING_DESC_F_NEXT)) {
+				DRV_LOG(ERR, "Vf: %s qix:%d last desc is too short", priv->vdev->device->name, qix);
+				return -EINVAL;
+			}
+
+			*desc_addr = vq.desc[vq.desc[desc_id].next].addr;
+			*write_len = vq.desc[vq.desc[desc_id].next].len;
+		}
+	}
+
 	return 0;
 }
 

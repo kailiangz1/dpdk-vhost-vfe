@@ -111,6 +111,20 @@ struct virtio_blk_config {
 #define VIRTIO_BLK_T_IN 0
 #define VIRTIO_BLK_T_OUT 1
 
+/*
+ * This comes first in the read scatter-gather list.
+ * For legacy virtio, if VIRTIO_F_ANY_LAYOUT is not negotiated,
+ * this is the first element of the read scatter-gather list.
+ */
+struct virtio_blk_outhdr {
+	/* VIRTIO_BLK_T* */
+	uint32_t type;
+	/* io priority. */
+	uint32_t ioprio;
+	/* Sector (ie. 512 byte offset) */
+	uint64_t sector;
+};
+
 #ifndef VIRTIO_BLK_NO_LEGACY
 /* This bit says it's a scsi command, not an actual read or write. */
 #define VIRTIO_BLK_T_SCSI_CMD	2
