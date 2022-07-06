@@ -753,8 +753,8 @@ virtio_pci_dev_state_config_read(struct virtio_pci_dev *vpdev, void *dst, int le
 
 	dev_cfg_len = hw->virtio_dev_sp_ops->get_dev_cfg_size();
 
-	if (length < dev_cfg_len) {
-		PMD_INIT_LOG(INFO, "vpdev %s dev cfg len %d < cfg len %d", VP_DEV_NAME(vpdev), length, dev_cfg_len);
+	if (length != dev_cfg_len) {
+		PMD_INIT_LOG(INFO, "vpdev %s copy len %d != cfg len %d use min", VP_DEV_NAME(vpdev), length, dev_cfg_len);
 	}
 	rte_memcpy(dst, state_info + 1, RTE_MIN(length, dev_cfg_len));
 

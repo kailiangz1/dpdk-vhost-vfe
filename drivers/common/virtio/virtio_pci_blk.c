@@ -67,10 +67,10 @@ modern_blk_dev_cfg_dump(void *f_hdr)
 	struct virtio_field_hdr *tmp_f_hdr= f_hdr;
 	const struct virtio_blk_config *dev_cfg;
 
-	if (tmp_f_hdr->size < sizeof(struct virtio_blk_config)) {
+	if (tmp_f_hdr->size < offsetof(struct virtio_blk_config, num_queues)) {
 		PMD_DUMP_LOG(ERR, ">>> blk_config: state is truncated (%d < %lu)\n",
 					tmp_f_hdr->size,
-					sizeof(struct virtio_blk_config));
+					offsetof(struct virtio_blk_config, num_queues));
 		return;
 	}
 
