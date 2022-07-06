@@ -21,6 +21,7 @@ RTE_LOG_REGISTER(virtio_vdpa_logtype, pmd.vdpa.virtio, NOTICE);
 
 #define VIRTIO_VDPA_INTR_RETRIES_USEC 1000
 #define VIRTIO_VDPA_INTR_RETRIES 256
+#define VIRTIO_VDPA_STATE_ALIGN 4096
 
 extern struct virtio_vdpa_device_callback virtio_vdpa_blk_callback;
 extern struct virtio_vdpa_device_callback virtio_vdpa_net_callback;
@@ -244,9 +245,14 @@ virtio_vdpa_features_get(struct rte_vdpa_device *vdev, uint64_t *features)
 		return -ENODEV;
 	}
 
-	virtio_pci_dev_features_get(priv->vpdev, features);
+	if (priv->configured)
+		virtio_pci_dev_features_get(priv->vpdev, features);
+	else
+		virtio_pci_dev_state_features_get(priv->vpdev, features);
+
 	*features |= (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
 	*features |= (1ULL << VHOST_F_LOG_ALL);
+	DRV_LOG(INFO, "%s hw feature is 0x%" PRIx64, priv->vdev->device->name, *features);
 
 	return 0;
 }
@@ -437,9 +443,11 @@ virtio_vdpa_virtq_disable(struct virtio_vdpa_priv *priv, int vq_idx)
 		return ret;
 	}
 
-	virtio_pci_dev_queue_del(priv->vpdev, vq_idx);
+	priv->configured ? virtio_pci_dev_queue_del(priv->vpdev, vq_idx) :
+					virtio_pci_dev_state_queue_del(priv->vpdev, vq_idx, priv->state_mz->addr);
 
-	ret = virtio_pci_dev_interrupt_disable(priv->vpdev, vq_idx + 1);
+	ret = priv->configured ? virtio_pci_dev_interrupt_disable(priv->vpdev, vq_idx + 1) :
+		virtio_pci_dev_state_interrupt_disable(priv->vpdev, vq_idx + 1, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s virtq %d interrupt disabel failed",
 						priv->vdev->device->name, vq_idx);
@@ -465,7 +473,8 @@ virtio_vdpa_virtq_enable(struct virtio_vdpa_priv *priv, int vq_idx)
 	if (ret)
 		return ret;
 
-	ret = virtio_pci_dev_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1);
+	ret = priv->configured ? virtio_pci_dev_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1) :
+		virtio_pci_dev_state_interrupt_enable(priv->vpdev, vq.callfd, vq_idx + 1, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s virtq interrupt enable failed ret:%d",
 						priv->vdev->device->name, ret);
@@ -508,7 +517,10 @@ virtio_vdpa_virtq_enable(struct virtio_vdpa_priv *priv, int vq_idx)
 	vring_info.size = vq.size;
 
 	DRV_LOG(DEBUG, "Virtq %d nr_entrys:%d", vq_idx, vq.size);
-	if (virtio_pci_dev_queue_set(priv->vpdev, vq_idx, &vring_info)) {
+
+	ret = priv->configured ? virtio_pci_dev_queue_set(priv->vpdev, vq_idx, &vring_info) :
+		virtio_pci_dev_state_queue_set(priv->vpdev, vq_idx, &vring_info, priv->state_mz->addr);
+	if (ret) {
 		DRV_LOG(ERR, "%s setup_queue failed", priv->vdev->device->name);
 		return -EINVAL;
 	}
@@ -709,8 +721,12 @@ virtio_vdpa_features_set(int vid)
 
 	/* TO_DO: check why --- */
 	features |= (1ULL << VIRTIO_F_IOMMU_PLATFORM);
-	priv->guest_features = virtio_pci_dev_features_set(priv->vpdev, features);
-	DRV_LOG(INFO, "%s vid %d hw feature is %" PRIx64 "guest feature is %" PRIx64,
+	if (priv->configured)
+		priv->guest_features = virtio_pci_dev_features_set(priv->vpdev, features);
+	else
+		priv->guest_features = virtio_pci_dev_state_features_set(priv->vpdev, features, priv->state_mz->addr);
+
+	DRV_LOG(INFO, "%s vid %d guest feature is %" PRIx64 "orign feature is %" PRIx64,
 					priv->vdev->device->name, vid,
 					priv->guest_features, features);
 
@@ -723,6 +739,10 @@ virtio_vdpa_dev_close(int vid)
 	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
 	struct virtio_vdpa_priv *priv =
 		virtio_vdpa_find_priv_resource_by_vdev(vdev);
+	struct virtio_dev_run_state_info *tmp_hw_idx;
+	struct virtio_admin_migration_get_internal_state_pending_bytes_result res;
+	char mz_name[RTE_MEMZONE_NAMESIZE];
+	uint16_t num_vr;
 	int ret, i;
 
 	if (priv == NULL) {
@@ -731,17 +751,99 @@ virtio_vdpa_dev_close(int vid)
 	}
 
 	/* Suspend */
-	/* Set_vring_base */
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", vdev->device->name, priv->vf_id, ret);
+		return ret;
+	}
+	priv->lm_status = VIRTIO_S_QUIESCED;
 
-	ret = virtio_pci_dev_interrupt_disable(priv->vpdev, 0);
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv, priv->vf_id, VIRTIO_S_FREEZED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", vdev->device->name, priv->vf_id, ret);
+		return ret;
+	}
+	priv->lm_status = VIRTIO_S_FREEZED;
+
+	ret = mi_ops.lm_cmd_get_internal_pending_bytes(priv->pf_priv, priv->vf_id, &res);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed get pending bytes ret:%d", vdev->device->name, priv->vf_id, ret);
+		return ret;
+	}
+
+	/* If pre allocated memzone is small, we will realloc */
+	if (res.pending_bytes > VIRTIO_VDPA_REMOTE_STATE_DEFAULT_SIZE) {
+		rte_memzone_free(priv->state_mz_remote);
+
+		ret = snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "%s_remote_mz", vdev->device->name);
+		if (ret < 0 || ret >= RTE_MEMZONE_NAMESIZE) {
+			DRV_LOG(ERR, "%s remote mem zone print fail ret:%d", vdev->device->name, ret);
+			return -EINVAL;
+		}
+
+		priv->state_mz_remote = rte_memzone_reserve_aligned(mz_name,
+										res.pending_bytes,
+										priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
+										VIRTIO_VDPA_STATE_ALIGN);
+		if (priv->state_mz_remote == NULL) {
+			DRV_LOG(ERR, "Failed to reserve remote memzone dev:%s", vdev->device->name);
+			return -ENOMEM;
+		}
+	}
+
+	if (res.pending_bytes ==0) {
+		DRV_LOG(ERR, "Dev:%s pending bytes is 0", vdev->device->name);
+		return -EINVAL;
+	}
+
+	DRV_LOG(INFO, "Dev:%s pending bytes is 0x%" PRIx64, vdev->device->name, res.pending_bytes);
+
+	/*save*/
+	ret = mi_ops.lm_cmd_save_state(priv->pf_priv, priv->vf_id, 0,
+								res.pending_bytes,
+								priv->state_mz_remote->iova);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed get state ret:%d", vdev->device->name, priv->vf_id, ret);
+		return ret;
+	}
+
+	virtio_pci_dev_state_dump(priv->vpdev ,priv->state_mz_remote->addr, res.pending_bytes);
+	num_vr = rte_vhost_get_vring_num(vid);
+	tmp_hw_idx = rte_zmalloc(NULL, num_vr * sizeof(struct virtio_dev_run_state_info), 0);
+
+	ret = virtio_pci_dev_state_hw_idx_get(priv->state_mz_remote->addr, res.pending_bytes, tmp_hw_idx, num_vr);
+	if (ret) {
+		rte_free(tmp_hw_idx);
+		DRV_LOG(ERR, "%s vfid %d failed get hwidx ret:%d", vdev->device->name, priv->vf_id, ret);
+		return ret;
+	}
+
+	/* Set_vring_base */
+	for(i = 0; i < num_vr; i++) {
+		if (tmp_hw_idx[i].flag) {
+			DRV_LOG(INFO, "%s vid %d qid %d set last_avail_idx:%d,last_used_idx:%d",
+				vdev->device->name, vid,
+				i, tmp_hw_idx[i].last_avail_idx, tmp_hw_idx[i].last_used_idx);
+			ret = rte_vhost_set_vring_base(vid, i, tmp_hw_idx[i].last_avail_idx, tmp_hw_idx[i].last_used_idx);
+			if (ret) {
+				rte_free(tmp_hw_idx);
+				DRV_LOG(ERR, "%s vfid %d failed set hwidx ret:%d", vdev->device->name, priv->vf_id, ret);
+				return ret;
+			}
+		}
+	}
+
+	rte_free(tmp_hw_idx);
+
+	priv->configured = 0;
+
+	ret = virtio_pci_dev_state_interrupt_disable(priv->vpdev, 0, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s error disabling virtio dev interrupts: %d (%s)",
 				priv->vdev->device->name,
 				ret, strerror(errno));
 		return ret;
 	}
-
-	virtio_pci_dev_reset(priv->vpdev);
 
 	ret = virtio_vdpa_dma_unmap(priv);
 	if (ret) {
@@ -755,13 +857,20 @@ virtio_vdpa_dev_close(int vid)
 			virtio_vdpa_vring_state_set(vid, i, 0);
 	}
 
-	/* Tell the host we've noticed this device. */
-	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_ACK);
+	virtio_pci_dev_state_all_queues_disable(priv->vpdev, priv->state_mz->addr);
 
-	/* Tell the host we've known how to drive the device. */
-	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_DRIVER);
+	virtio_pci_dev_state_dev_status_set(priv->state_mz->addr, VIRTIO_CONFIG_STATUS_ACK |
+													VIRTIO_CONFIG_STATUS_DRIVER);
 
-	priv->configured = 0;
+	virtio_pci_dev_state_dump(priv->vpdev ,priv->state_mz->addr, priv->state_size);
+
+	ret = mi_ops.lm_cmd_restore_state(priv->pf_priv, priv->vf_id, 0, priv->state_size, priv->state_mz->iova);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed restore state ret:%d", vdev->device->name, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		virtio_vdpa_dma_unmap(priv);
+		return -rte_errno;
+	}
 
 	DRV_LOG(INFO, "%s vid %d was closed", priv->vdev->device->name, vid);
 	return ret;
@@ -773,7 +882,8 @@ virtio_vdpa_dev_config(int vid)
 	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
 	struct virtio_vdpa_priv *priv =
 		virtio_vdpa_find_priv_resource_by_vdev(vdev);
-	int ret, fd;
+	uint16_t last_avail_idx, last_used_idx;
+	int ret, fd, i;
 
 	if (priv == NULL) {
 		DRV_LOG(ERR, "Invalid vDPA device: %s", vdev->device->name);
@@ -801,7 +911,7 @@ virtio_vdpa_dev_config(int vid)
 	}
 
 	fd = rte_intr_fd_get(priv->pdev->intr_handle);
-	ret = virtio_pci_dev_interrupt_enable(priv->vpdev, fd, 0);
+	ret = virtio_pci_dev_state_interrupt_enable(priv->vpdev, fd, 0, priv->state_mz->addr);
 	if (ret) {
 		DRV_LOG(ERR, "%s error enabling virtio dev interrupts: %d(%s)",
 				vdev->device->name, ret, strerror(errno));
@@ -810,9 +920,63 @@ virtio_vdpa_dev_config(int vid)
 		return -rte_errno;
 	}
 
-	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_FEATURES_OK);
-	/* Start the device */
-	virtio_pci_dev_set_status(priv->vpdev, VIRTIO_CONFIG_STATUS_DRIVER_OK);
+	for (i = 0; i < priv->nr_virtqs; i++) {
+		ret = rte_vhost_get_vring_base(vid, i, &last_avail_idx, &last_used_idx);
+		if (ret) {
+			DRV_LOG(ERR, "%s error get vring base ret:%d", vdev->device->name, ret);
+			rte_errno = rte_errno ? rte_errno : EINVAL;
+			virtio_vdpa_dma_unmap(priv);
+			return -rte_errno;
+		}
+
+		DRV_LOG(INFO, "%s vid %d qid %d last_avail_idx:%d,last_used_idx:%d",
+						vdev->device->name, vid,
+						i, last_avail_idx, last_used_idx);
+
+		ret = virtio_pci_dev_state_hw_idx_set(priv->vpdev, i ,
+											last_avail_idx,
+											last_used_idx, priv->state_mz->addr);
+		if (ret) {
+			DRV_LOG(ERR, "%s error get vring base ret:%d", vdev->device->name, ret);
+			rte_errno = rte_errno ? rte_errno : EINVAL;
+			virtio_vdpa_dma_unmap(priv);
+			return -rte_errno;
+		}
+	}
+
+	virtio_pci_dev_state_dev_status_set(priv->state_mz->addr, VIRTIO_CONFIG_STATUS_ACK |
+													VIRTIO_CONFIG_STATUS_DRIVER |
+													VIRTIO_CONFIG_STATUS_FEATURES_OK |
+													VIRTIO_CONFIG_STATUS_DRIVER_OK);
+
+	virtio_pci_dev_state_dump(priv->vpdev , priv->state_mz->addr, priv->state_size);
+
+	ret = mi_ops.lm_cmd_restore_state(priv->pf_priv, priv->vf_id, 0, priv->state_size, priv->state_mz->iova);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed restore state ret:%d", vdev->device->name, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		virtio_vdpa_dma_unmap(priv);
+		return -rte_errno;
+	}
+
+	ret = mi_ops.lm_cmd_resume(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed unfreeze ret:%d", vdev->device->name, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		virtio_vdpa_dma_unmap(priv);
+		return -rte_errno;
+	}
+	priv->lm_status = VIRTIO_S_QUIESCED;
+
+	ret = mi_ops.lm_cmd_resume(priv->pf_priv, priv->vf_id, VIRTIO_S_RUNNING);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed unquiesced ret:%d", vdev->device->name, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		virtio_vdpa_dma_unmap(priv);
+		return -rte_errno;
+	}
+	priv->lm_status = VIRTIO_S_RUNNING;
+
 	DRV_LOG(INFO, "%s vid %d move to driver ok", vdev->device->name, vid);
 
 	priv->configured = 1;
@@ -882,8 +1046,9 @@ virtio_vdpa_dev_config_get(int vid ,uint8_t *payload, uint32_t len)
 		DRV_LOG(ERR, "Invalid vDPA device: %s.", vdev->device->name);
 		return -EINVAL;
 	}
-	virtio_pci_dev_config_read(priv->vpdev, 0, payload, len);
-	DRV_LOG(INFO, "vDPA device %d get config len %d", vid,len);
+	priv->configured ? virtio_pci_dev_config_read(priv->vpdev, 0, payload, len) :
+					virtio_pci_dev_state_config_read(priv->vpdev, payload, len, priv->state_mz->addr);
+	DRV_LOG(INFO, "vDPA device %d get config len %d", vid, len);
 
 	return 0;
 }
@@ -1029,15 +1194,130 @@ virtio_vdpa_queues_alloc(struct virtio_vdpa_priv *priv)
 }
 
 static int
+virtio_vdpa_get_pf_name(const char *vf_name, char *pf_name, size_t pf_name_len)
+{
+	char pf_path[1024];
+	char link[1024];
+	int ret;
+
+	if (!pf_name || !vf_name)
+		return -EINVAL;
+
+	snprintf(pf_path, 1024, "%s/%s/physfn", rte_pci_get_sysfs_path(), vf_name);
+	memset(link, 0, sizeof(link));
+	ret = readlink(pf_path, link, (sizeof(link)-1));
+	if ((ret < 0) || ((unsigned int)ret > (sizeof(link)-1)))
+		return -ENOENT;
+
+	strncpy(pf_name, &link[3], pf_name_len);
+	DRV_LOG(DEBUG, "Link %s, vf name: %s pf name: %s", link, vf_name, pf_name);
+
+	return 0;
+}
+#define VIRTIO_VDPA_MAX_VF 4096
+static int
+virtio_vdpa_get_vfid(const char *pf_name, const char *vf_name, int *vfid)
+{
+	char pf_path[1024];
+	char link[1024];
+	int ret, i;
+
+	if (!pf_name || !vf_name)
+		return -EINVAL;
+
+	for(i = 0; i < VIRTIO_VDPA_MAX_VF; i++) {
+		snprintf(pf_path, 1024, "%s/%s/virtfn%d", rte_pci_get_sysfs_path(), pf_name, i);
+		memset(link, 0, sizeof(link));
+		ret = readlink(pf_path, link, (sizeof(link)-1));
+		if ((ret < 0) || ((unsigned int)ret > (sizeof(link)-1)))
+			return -ENOENT;
+
+		if (strcmp(&link[3], vf_name) == 0) {
+			*vfid = i + 1;
+			DRV_LOG(DEBUG, "Vf name: %s pf name: %s vfid %d", vf_name, pf_name, *vfid);
+			return 0;
+		}
+	}
+	DRV_LOG(DEBUG, "Vf name: %s pf name: %s can't get vfid", vf_name, pf_name);
+	return -ENODEV;
+}
+
+static int
+virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
+{
+	struct virtio_vdpa_priv *priv = NULL;
+	bool found = false, ret;
+
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
+		if (priv->pdev == pci_dev) {
+			found = true;
+			TAILQ_REMOVE(&virtio_priv_list, priv, next);
+			break;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+	if (found) {
+		if (priv->configured)
+			virtio_vdpa_dev_close(priv->vid);
+
+		if (priv->lm_status == VIRTIO_S_FREEZED) {
+			ret = mi_ops.lm_cmd_resume(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
+			if (ret) {
+				DRV_LOG(ERR, "%s vfid %d failed unfreeze ret:%d", pci_dev->name, priv->vf_id, ret);
+			}
+			priv->lm_status = VIRTIO_S_QUIESCED;
+		}
+
+		if (priv->lm_status == VIRTIO_S_QUIESCED) {
+			ret = mi_ops.lm_cmd_resume(priv->pf_priv, priv->vf_id, VIRTIO_S_RUNNING);
+			if (ret) {
+				DRV_LOG(ERR, "%s vfid %d failed unquiesced ret:%d", pci_dev->name, priv->vf_id, ret);
+			}
+			priv->lm_status = VIRTIO_S_RUNNING;
+		}
+
+		if (priv->vdev)
+			rte_vdpa_unregister_device(priv->vdev);
+
+		if (priv->vpdev) {
+			ret = virtio_pci_dev_interrupts_free(priv->vpdev);
+			if (ret) {
+				DRV_LOG(ERR, "Error free virtio dev interrupts: %s",
+						strerror(errno));
+			}
+		}
+
+		virtio_vdpa_queues_free(priv);
+
+		if (priv->vpdev) {
+			virtio_pci_dev_reset(priv->vpdev);
+			virtio_pci_dev_free(priv->vpdev);
+		}
+		if (priv->state_mz)
+			rte_memzone_free(priv->state_mz);
+
+		if (priv->state_mz_remote)
+			rte_memzone_free(priv->state_mz_remote);
+		rte_free(priv);
+	}
+
+	return found ? 0 : -ENODEV;
+}
+
+static int
 virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		struct rte_pci_device *pci_dev)
 {
 	int vdpa = 0;
-	int ret;
+	int ret, vf_id = 0, state_len;
 	struct virtio_vdpa_priv *priv;
 	struct virtio_vdpa_pf_priv *pf_priv = NULL;
 	char devname[RTE_DEV_NAME_MAX_LEN] = {0};
+	char pfname[RTE_DEV_NAME_MAX_LEN] = {0};
+	char mz_name[RTE_MEMZONE_NAMESIZE];
 	int iommu_group_num;
+	size_t mz_len;
 
 	rte_pci_device_name(&pci_dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
 
@@ -1065,7 +1345,31 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		return -rte_errno;
 	}
 
-	priv->pf_priv = pf_priv;
+	priv->pdev = pci_dev;
+
+	ret = virtio_vdpa_get_pf_name(devname, pfname, sizeof(pfname));
+	if (ret) {
+		DRV_LOG(ERR, "%s failed to get pf name ret:%d", devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	/* check pf_priv before use it, might be null if not set */
+	priv->pf_priv = mi_ops.get_mi_by_bdf(pfname);;
+	if (!priv->pf_priv) {
+		DRV_LOG(ERR, "%s failed to get pf priv", devname);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	ret = virtio_vdpa_get_vfid(pfname, devname, &vf_id);
+	if (ret) {
+		DRV_LOG(ERR, "%s pf %s failed to get vfid ret:%d", devname, pfname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+	priv->vf_id = vf_id;
+
 	/* TO_DO: need to confirm following: */
 	priv->vfio_dev_fd = -1;
 	priv->vfio_group_fd = -1;
@@ -1093,8 +1397,6 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_errno = rte_errno ? rte_errno : EINVAL;
 		goto error;
 	}
-
-	priv->pdev = pci_dev;
 
 	priv->vpdev = virtio_pci_dev_alloc(pci_dev);
 	if (priv->vpdev == NULL) {
@@ -1147,52 +1449,80 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto error;
 	}
 
+	state_len = virtio_pci_dev_state_size_get(priv->vpdev);
+	DRV_LOG(INFO, "%s state len:%d", devname, state_len);
+
+	priv->state_size = state_len;
+	priv->state_mz = rte_memzone_reserve_aligned(devname, state_len,
+			priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
+			VIRTIO_VDPA_STATE_ALIGN);
+	if (priv->state_mz == NULL) {
+		DRV_LOG(ERR, "Failed to reserve memzone dev:%s", devname);
+		rte_errno = rte_errno ? rte_errno : ENOMEM;
+		goto error;
+	}
+
+	mz_len = priv->state_mz->len;
+	memset(priv->state_mz->addr, 0, mz_len);
+
+	ret = virtio_pci_dev_state_bar_copy(priv->vpdev, priv->state_mz->addr);
+	if (ret) {
+		DRV_LOG(ERR, "%s error copy bar to state ret:%d",
+					devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	virtio_pci_dev_state_dump(priv->vpdev, priv->state_mz->addr, state_len);
+
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", devname, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	priv->lm_status = VIRTIO_S_QUIESCED;
+
+	ret = mi_ops.lm_cmd_suspend(priv->pf_priv, priv->vf_id, VIRTIO_S_FREEZED);
+	if (ret) {
+		DRV_LOG(ERR, "%s vfid %d failed suspend ret:%d", devname, priv->vf_id, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	priv->lm_status = VIRTIO_S_FREEZED;
+
+	/* Init remote state mz */
+
+	ret = snprintf(mz_name, RTE_MEMZONE_NAMESIZE, "%s_remote_mz", devname);
+	if (ret < 0 || ret >= RTE_MEMZONE_NAMESIZE) {
+		DRV_LOG(ERR, "%s remote mem zone print fail ret:%d", devname, ret);
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+
+	priv->state_mz_remote = rte_memzone_reserve_aligned(mz_name,
+			VIRTIO_VDPA_REMOTE_STATE_DEFAULT_SIZE,
+			priv->pdev->device.numa_node, RTE_MEMZONE_IOVA_CONTIG,
+			VIRTIO_VDPA_STATE_ALIGN);
+	if (priv->state_mz_remote == NULL) {
+		DRV_LOG(ERR, "Failed to reserve remote memzone dev:%s", devname);
+		rte_errno = rte_errno ? rte_errno : ENOMEM;
+		goto error;
+	}
+
+	mz_len = priv->state_mz_remote->len;
+	memset(priv->state_mz_remote->addr, 0, mz_len);
+
 	pthread_mutex_lock(&priv_list_lock);
 	TAILQ_INSERT_TAIL(&virtio_priv_list, priv, next);
 	pthread_mutex_unlock(&priv_list_lock);
 	return 0;
 
 error:
-	if (priv)
-		rte_free(priv);
+	virtio_vdpa_dev_remove(pci_dev);
 	return -rte_errno;
-}
-
-static int
-virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
-{
-	struct virtio_vdpa_priv *priv = NULL;
-	bool found = false, ret;
-
-	pthread_mutex_lock(&priv_list_lock);
-	TAILQ_FOREACH(priv, &virtio_priv_list, next) {
-		if (priv->pdev == pci_dev) {
-			found = true;
-			TAILQ_REMOVE(&virtio_priv_list, priv, next);
-			break;
-		}
-	}
-	pthread_mutex_unlock(&priv_list_lock);
-	if (found) {
-		if (priv->configured)
-			virtio_vdpa_dev_close(priv->vid);
-
-		if (priv->vdev)
-			rte_vdpa_unregister_device(priv->vdev);
-
-		ret = virtio_pci_dev_interrupts_free(priv->vpdev);
-		if (ret) {
-			DRV_LOG(ERR, "Error free virtio dev interrupts: %s",
-					strerror(errno));
-		}
-
-		virtio_vdpa_queues_free(priv);
-		virtio_pci_dev_free(priv->vpdev);
-
-		rte_free(priv);
-	}
-
-	return found ? 0 : -ENODEV;
 }
 
 void
