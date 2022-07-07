@@ -557,13 +557,6 @@ virtio_vdpa_vring_state_set(int vid, int vq_idx, int state)
 	/* TO_DO: check if vid set here is suitable */
 	priv->vid = vid;
 
-	if (virtio_pci_dev_get_status(priv->vpdev) &
-		VIRTIO_CONFIG_STATUS_DRIVER_OK) {
-		DRV_LOG(ERR, "Can not set vring state when driver ok vDPA device: %s",
-						vdev->device->name);
-		return -EINVAL;
-	}
-
 	/* If vq is already enabled, and enable again means parameter change, so,
 	 * we disable vq first, then enable
 	 */
