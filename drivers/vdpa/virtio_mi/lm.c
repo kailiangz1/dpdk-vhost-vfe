@@ -1097,7 +1097,7 @@ virtio_vdpa_get_net_dev_required_features(void)
 static uint16_t
 virtio_vdpa_net_dev_get_adminq_idx(struct virtio_vdpa_pf_priv *priv)
 {
-	return virtio_pci_dev_nr_vq_get(priv->vpdev);
+	return virtio_pci_dev_nr_vq_get(priv->vpdev) -1;
 }
 
 static uint64_t
