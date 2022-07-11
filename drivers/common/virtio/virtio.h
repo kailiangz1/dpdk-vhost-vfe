@@ -127,6 +127,7 @@ struct virtio_hw {
 	uint8_t intr_lsc;
 	uint16_t max_queue_pairs;
 	uint16_t num_queues_blk;
+	uint16_t num_queues;
 	struct virtnet_ctl *cvq;
 	struct virtadmin_ctl *avq;
 	struct rte_pci_device *pci_dev;
@@ -157,6 +158,10 @@ struct virtio_ops {
 
 struct virtio_dev_specific_ops {
 	uint16_t (*get_queue_num)(struct virtio_hw *hw);
+	uint16_t (*get_dev_cfg_size)(void);
+	void * (*get_queue_offset)(void *state);
+	uint32_t (*get_state_size)(uint16_t num_queues);
+	void (*dev_cfg_dump)(void *f_hdr);
 };
 
 /*
