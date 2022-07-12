@@ -206,6 +206,7 @@ virtio_vdpa_features_get(struct rte_vdpa_device *vdev, uint64_t *features)
 		virtio_pci_dev_state_features_get(priv->vpdev, features);
 
 	*features |= (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
+	*features |= (1ULL << VHOST_F_LOG_ALL);
 	DRV_LOG(INFO, "%s hw feature is 0x%" PRIx64, priv->vdev->device->name, *features);
 
 	return 0;
@@ -645,8 +646,10 @@ virtio_vdpa_features_set(int vid)
 	struct rte_vdpa_device *vdev = rte_vhost_get_vdpa_device(vid);
 	struct virtio_vdpa_priv *priv =
 		virtio_vdpa_find_priv_resource_by_vdev(vdev);
-	uint64_t log_base, log_size;
+	uint64_t log_base, log_size, max_phy;
 	uint64_t features;
+	struct virtio_sge lb_sge;
+	rte_iova_t iova;
 	int ret;
 
 	if (priv == NULL) {
@@ -667,6 +670,40 @@ virtio_vdpa_features_set(int vid)
 						priv->vdev->device->name);
 			return ret;
 		}
+
+		iova = rte_mem_virt2iova(&log_base);
+		if (iova == RTE_BAD_IOVA) {
+			DRV_LOG(ERR, "%s log get iova failed ret:%d",
+						priv->vdev->device->name, ret);
+			return ret;
+		}
+
+		ret = rte_vfio_container_dma_map(RTE_VFIO_DEFAULT_CONTAINER_FD, log_base,
+						 iova, log_size);
+		if (ret < 0) {
+			DRV_LOG(ERR, "%s log buffer DMA map failed ret:%d",
+						priv->vdev->device->name, ret);
+			return ret;
+		}
+
+		lb_sge.addr = log_base;
+		lb_sge.len = log_size;
+		ret = virtio_vdpa_max_phy_addr_get(priv, &max_phy);
+		if (ret) {
+			DRV_LOG(ERR, "%s failed to get max phy addr",
+						priv->vdev->device->name);
+			return ret;
+		}
+
+		ret = virtio_vdpa_cmd_dirty_page_start_track(priv->pf_priv, priv->vf_id, VIRTIO_M_DIRTY_TRACK_PUSH_BITMAP, PAGE_SIZE, 0, max_phy, 1, &lb_sge);
+		DRV_LOG(INFO, "%s vfid %d start track max phy:%" PRIx64 "log_base %" PRIx64 "log_size %" PRIx64,
+					priv->vdev->device->name, priv->vf_id, max_phy , log_base, log_size);
+		if (ret) {
+			DRV_LOG(ERR, "%s failed to start track ret:%d",
+						priv->vdev->device->name, ret);
+			return ret;
+		}
+
 		/* TO_DO: add log op */
 	}
 
