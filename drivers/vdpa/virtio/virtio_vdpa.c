@@ -1385,7 +1385,8 @@ virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
 				DRV_LOG(ERR, "%s unregister dev interrupt fail ret:%d", pci_dev->name, ret);
 			}
 		}
-
+		/*No need to unfreeze as reset will happen later, controller will crash, use as a WA */
+		#if 0
 		if (priv->lm_status == VIRTIO_S_FREEZED) {
 			ret = virtio_vdpa_cmd_set_status(priv->pf_priv, priv->vf_id, VIRTIO_S_QUIESCED);
 			if (ret) {
@@ -1401,6 +1402,7 @@ virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
 			}
 			priv->lm_status = VIRTIO_S_RUNNING;
 		}
+		#endif
 
 		if (priv->vdev)
 			rte_vdpa_unregister_device(priv->vdev);

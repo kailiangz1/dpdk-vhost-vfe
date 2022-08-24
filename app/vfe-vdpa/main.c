@@ -341,13 +341,34 @@ vdpa_sample_quit(void)
 			close_vdpa(&vports[i]);
 	}
 }
+#define RTE_DEV_FOREACH_SAFE(dev, devstr, it, tdev) \
+    for (rte_dev_iterator_init(it, devstr), \
+        (dev) = rte_dev_iterator_next(it); \
+        (dev) && ((tdev) = rte_dev_iterator_next(it), 1); \
+        (dev) = (tdev))
 
 static void
 signal_handler(int signum)
 {
+	struct rte_device *dev;
+	struct rte_dev_iterator dev_iter;
+	struct rte_device *tdev = NULL;
+
 	if (signum == SIGINT || signum == SIGTERM) {
 		printf("\nSignal %d received, preparing to exit...\n", signum);
+		vdpa_rpc_stop(&vdpa_rpc_ctx);
 		vdpa_sample_quit();
+
+		RTE_DEV_FOREACH_SAFE(dev, "class=vdpa", &dev_iter, tdev) {
+			rte_dev_remove(dev);
+		}
+
+		RTE_DEV_FOREACH_SAFE(dev, "bus=pci", &dev_iter, tdev) {
+			rte_dev_remove(dev);
+		}
+
+		/* clean up the EAL */
+		rte_eal_cleanup();
 		exit(0);
 	}
 }
@@ -639,10 +660,8 @@ main(int argc, char *argv[])
 	struct rte_device *dev;
 	struct rte_dev_iterator dev_iter;
 	rte_uuid_t vf_token;
+	struct rte_device *tdev = NULL;
 
-	ret = vdpa_rpc_start(&vdpa_rpc_ctx);
-	if (ret < 0)
-		rte_exit(EXIT_FAILURE, "rpc init failed\n");
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "eal init failed\n");
@@ -658,6 +677,11 @@ main(int argc, char *argv[])
 		uuid_generate(vf_token);
 		rte_eal_vfio_set_vf_token(vf_token);
 	}
+
+	ret = vdpa_rpc_start(&vdpa_rpc_ctx);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "rpc init failed\n");
+
 	ret = parse_args(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "invalid argument\n");
@@ -696,6 +720,15 @@ main(int argc, char *argv[])
 		vdpa_sample_quit();
 	}
 	vdpa_rpc_stop(&vdpa_rpc_ctx);
+
+	RTE_DEV_FOREACH_SAFE(dev, "class=vdpa", &dev_iter, tdev) {
+		rte_dev_remove(dev);
+	}
+
+	RTE_DEV_FOREACH_SAFE(dev, "bus=pci", &dev_iter, tdev) {
+		rte_dev_remove(dev);
+	}
+
 	/* clean up the EAL */
 	rte_eal_cleanup();
 
