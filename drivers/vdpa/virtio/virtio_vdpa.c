@@ -1436,6 +1436,7 @@ virtio_vdpa_dev_remove(struct rte_pci_device *pci_dev)
 	return found ? 0 : -ENODEV;
 }
 
+#define VIRTIO_VDPA_GET_GROUPE_RETRIES 120
 static int
 virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		struct rte_pci_device *pci_dev)
@@ -1448,6 +1449,7 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 	int iommu_group_num;
 	size_t mz_len;
+	int retries = VIRTIO_VDPA_GET_GROUPE_RETRIES;
 
 	rte_pci_device_name(&pci_dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
 
@@ -1514,13 +1516,20 @@ virtio_vdpa_dev_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto error;
 	}
 
-	priv->vfio_group_fd = rte_vfio_container_group_bind(
-			priv->vfio_container_fd, iommu_group_num);
-	if (priv->vfio_group_fd < 0) {
-		DRV_LOG(ERR, "%s failed to get group fd", devname);
-		rte_errno = rte_errno ? rte_errno : EINVAL;
-		goto error;
-	}
+	DRV_LOG(INFO, "%s iommu_group_num:%d", devname, iommu_group_num);
+
+	do {
+		priv->vfio_group_fd = rte_vfio_container_group_bind(
+				priv->vfio_container_fd, iommu_group_num);
+		if (priv->vfio_group_fd < 0) {
+			DRV_LOG(ERR, "%s failed to get group fd", devname);
+			sleep(1);
+			retries--;
+		} else
+			break;
+		if (!retries)
+			goto error;
+	} while(!retries);
 
 	priv->vpdev = virtio_pci_dev_alloc(pci_dev);
 	if (priv->vpdev == NULL) {
