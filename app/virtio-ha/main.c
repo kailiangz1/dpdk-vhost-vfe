@@ -93,8 +93,10 @@ ha_server_app_set_prio_chnl(struct virtio_ha_msg *msg)
 	struct virtio_ha_msg *prio_msg = NULL;
 	int ret = HA_MSG_HDLR_SUCCESS;
 
-	if (msg->nr_fds != 1)
+	if (msg->nr_fds != 1) {
+		HA_APP_LOG(ERR, "Wrong msg(nr_fds %d), should be nr_fds 1", msg->nr_fds);
 		return HA_MSG_HDLR_ERR;
+	}
 
 	pthread_mutex_lock(&prio_chnl_mutex);
 	hs.prio_chnl_fd = msg->fds[0];
@@ -251,6 +253,7 @@ ha_server_app_query_vf_ctx(struct virtio_ha_msg *msg)
 	struct virtio_ha_pf_dev_list *list = &hs.pf_list;
 	struct virtio_ha_vf_dev_list *vf_list = NULL;
 	uint32_t nr_vf;
+	struct vdpa_vf_ctx_content *vf_ctt;
 
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
@@ -266,14 +269,19 @@ ha_server_app_query_vf_ctx(struct virtio_ha_msg *msg)
 	vf = (struct vdpa_vf_with_devargs *)msg->iov.iov_base;
 	TAILQ_FOREACH(vf_dev, vf_list, next) {
 		if (!strcmp(vf_dev->vf_devargs.vf_name.dev_bdf, vf->vf_name.dev_bdf)) {
-			msg->iov.iov_len = sizeof(struct virtio_vdpa_dma_mem) +
-				vf_dev->vf_ctx.mem.nregions * sizeof(struct virtio_vdpa_mem_region);
+			msg->iov.iov_len = sizeof(struct vdpa_vf_ctx_content) +
+				vf_dev->vf_ctx.ctt.mem.nregions * sizeof(struct virtio_vdpa_mem_region);
 			msg->iov.iov_base = malloc(msg->iov.iov_len);
 			if (msg->iov.iov_base == NULL) {
 				HA_APP_LOG(ERR, "Failed to alloc vf mem table");
 				return HA_MSG_HDLR_ERR;
 			}
-			memcpy(msg->iov.iov_base, &vf_dev->vf_ctx.mem, msg->iov.iov_len);
+			vf_ctt = (struct vdpa_vf_ctx_content *)msg->iov.iov_base;
+			if (vf_dev->vhost_fd == -1)
+				vf_ctt->vhost_fd_saved = false;
+			else
+				vf_ctt->vhost_fd_saved = true;
+			memcpy((void *)&vf_ctt->mem, &vf_dev->vf_ctx.ctt.mem, msg->iov.iov_len - sizeof(bool));
 			msg->nr_fds = 3;
 			msg->fds[0] = vf_dev->vf_ctx.vfio_container_fd;
 			msg->fds[1] = vf_dev->vf_ctx.vfio_group_fd;
@@ -295,8 +303,10 @@ ha_server_pf_store_ctx(struct virtio_ha_msg *msg)
 	struct virtio_ha_pf_dev_list *list = &hs.pf_list;
 	struct virtio_ha_pf_dev *dev;
 
-	if (msg->nr_fds != 2)
+	if (msg->nr_fds != 2) {
+		HA_APP_LOG(ERR, "Wrong msg(nr_fds %d), should be nr_fds 2", msg->nr_fds);
 		return HA_MSG_HDLR_ERR;
+	}
 
 	/* Assume HA client will not re-set ctx */
 	dev = malloc(sizeof(struct virtio_ha_pf_dev));
@@ -371,8 +381,11 @@ ha_server_vf_store_devarg_vfio_fds(struct virtio_ha_msg *msg)
 	size_t len;
 	bool found = false;
 
-	if (msg->nr_fds != 3)
+	if (msg->nr_fds != 3 || msg->iov.iov_len != sizeof(struct vdpa_vf_with_devargs)) {
+		HA_APP_LOG(ERR, "Wrong msg(nr_fds %d, sz %lu), should be nr_fds 3, sz %lu",
+			msg->nr_fds, msg->iov.iov_len, sizeof(struct vdpa_vf_with_devargs));
 		return HA_MSG_HDLR_ERR;
+	}
 
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
@@ -423,8 +436,11 @@ ha_server_store_vhost_fd(struct virtio_ha_msg *msg)
 	struct virtio_dev_name *vf_name;
 	bool found = false;
 
-	if (msg->nr_fds != 1)
+	if (msg->nr_fds != 1 || msg->iov.iov_len != sizeof(struct virtio_dev_name)) {
+		HA_APP_LOG(ERR, "Wrong msg(nr_fds %d, sz %lu), should be nr_fds 1, sz %lu",
+			msg->nr_fds, msg->iov.iov_len, sizeof(struct virtio_dev_name));
 		return HA_MSG_HDLR_ERR;
+	}
 
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
@@ -463,9 +479,15 @@ ha_server_store_dma_tbl(struct virtio_ha_msg *msg)
 	struct virtio_ha_vf_dev *vf_dev;
 	struct virtio_dev_name *vf_name;
 	struct virtio_vdpa_dma_mem *mem;
-	size_t len;
+	size_t len, mem_len;
 	bool found = false;
 	uint32_t i;
+
+	if (msg->iov.iov_len < sizeof(struct virtio_dev_name)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), sz should be larger than %lu",
+			msg->iov.iov_len, sizeof(struct virtio_dev_name));
+		return HA_MSG_HDLR_ERR;
+	}
 
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
@@ -483,7 +505,12 @@ ha_server_store_dma_tbl(struct virtio_ha_msg *msg)
 	TAILQ_FOREACH(vf_dev, vf_list, next) {
 		if (!strcmp(vf_dev->vf_devargs.vf_name.dev_bdf, vf_name->dev_bdf)) {
 			mem = (struct virtio_vdpa_dma_mem *)(vf_name + 1);
-			memcpy(&vf_dev->vf_ctx.mem, mem, len);
+			mem_len = sizeof(struct virtio_vdpa_dma_mem) + mem->nregions * sizeof(struct virtio_vdpa_mem_region);
+			if (len != mem_len) {
+				HA_APP_LOG(ERR, "Wrong mem table size (%lu instead of %lu)", len, mem_len);
+				return HA_MSG_HDLR_ERR;
+			}
+			memcpy(&vf_dev->vf_ctx.ctt.mem, mem, len);
 			HA_APP_LOG(INFO, "Stored vf %s DMA memory table:", vf_name->dev_bdf);
 			for (i = 0; i < mem->nregions; i++) {
 				HA_APP_LOG(INFO, "Region %u: GPA 0x%" PRIx64 " HPA 0x%" PRIx64 " Size 0x%" PRIx64,
@@ -506,6 +533,12 @@ ha_server_remove_devarg_vfio_fds(struct virtio_ha_msg *msg)
 	struct virtio_ha_vf_dev *vf_dev;
 	struct virtio_dev_name *vf_name;
 	bool found = false;
+
+	if (msg->iov.iov_len != sizeof(struct virtio_dev_name)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), should be sz %lu",
+			msg->iov.iov_len, sizeof(struct virtio_dev_name));
+		return HA_MSG_HDLR_ERR;
+	}
 
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
@@ -553,6 +586,12 @@ ha_server_remove_vhost_fd(struct virtio_ha_msg *msg)
 	struct timeval start;
 	bool found = false;
 
+	if (msg->iov.iov_len != sizeof(struct virtio_dev_name)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), should be sz %lu",
+			msg->iov.iov_len, sizeof(struct virtio_dev_name));
+		return HA_MSG_HDLR_ERR;
+	}
+
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
 			vf_list = &dev->vf_list;
@@ -590,6 +629,12 @@ ha_server_remove_dma_tbl(struct virtio_ha_msg *msg)
 	struct virtio_vdpa_dma_mem *mem;
 	bool found = false;
 
+	if (msg->iov.iov_len != sizeof(struct virtio_dev_name)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), should be sz %lu",
+			msg->iov.iov_len, sizeof(struct virtio_dev_name));
+		return HA_MSG_HDLR_ERR;
+	}
+
 	TAILQ_FOREACH(dev, list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, msg->hdr.bdf)) {
 			vf_list = &dev->vf_list;
@@ -604,7 +649,7 @@ ha_server_remove_dma_tbl(struct virtio_ha_msg *msg)
 	vf_name = (struct virtio_dev_name *)msg->iov.iov_base;
 	TAILQ_FOREACH(vf_dev, vf_list, next) {
 		if (!strcmp(vf_dev->vf_devargs.vf_name.dev_bdf, vf_name->dev_bdf)) {
-			mem = &vf_dev->vf_ctx.mem;
+			mem = &vf_dev->vf_ctx.ctt.mem;
 			mem->nregions = 0;
 			HA_APP_LOG(INFO, "Removed vf %s DMA memory table", vf_name->dev_bdf);
 			break;
@@ -617,8 +662,10 @@ ha_server_remove_dma_tbl(struct virtio_ha_msg *msg)
 static int
 ha_server_store_global_cfd(struct virtio_ha_msg *msg)
 {
-	if (msg->nr_fds != 1)
-		return HA_MSG_HDLR_SUCCESS;
+	if (msg->nr_fds != 1) {
+		HA_APP_LOG(ERR, "Wrong msg(nr_fds %d), should be nr_fds 1", msg->nr_fds);
+		return HA_MSG_HDLR_ERR;
+	}
 
 	hs.global_cfd = msg->fds[0];
 	HA_APP_LOG(INFO, "Saved global container fd: %d", hs.global_cfd);
@@ -645,6 +692,12 @@ ha_server_global_store_dma_map(struct virtio_ha_msg *msg)
 	struct virtio_ha_global_dma_entry *entry;
 	struct virtio_ha_global_dma_map *map;
 	bool found = false;
+
+	if (msg->iov.iov_len != sizeof(struct virtio_ha_global_dma_map)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), should be sz %lu",
+			msg->iov.iov_len, sizeof(struct virtio_ha_global_dma_map));
+		return HA_MSG_HDLR_ERR;
+	}
 
 	map = (struct virtio_ha_global_dma_map *)msg->iov.iov_base;
 	TAILQ_FOREACH(entry, &hs.dma_tbl, next) {
@@ -677,6 +730,12 @@ ha_server_global_remove_dma_map(struct virtio_ha_msg *msg)
 	struct virtio_ha_global_dma_entry *entry;
 	struct virtio_ha_global_dma_map *map;
 	bool found = false;
+
+	if (msg->iov.iov_len != sizeof(struct virtio_ha_global_dma_map)) {
+		HA_APP_LOG(ERR, "Wrong msg(sz %lu), should be sz %lu",
+			msg->iov.iov_len, sizeof(struct virtio_ha_global_dma_map));
+		return HA_MSG_HDLR_ERR;
+	}
 
 	map = (struct virtio_ha_global_dma_map *)msg->iov.iov_base;
 	TAILQ_FOREACH(entry, &hs.dma_tbl, next) {

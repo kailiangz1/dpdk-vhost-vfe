@@ -184,7 +184,8 @@ send_fd_message(int sockfd, struct iovec *iov, size_t nr_iov, int *fds, int fd_n
 			sockfd, strerror(errno));
 		return ret;
 	} else if (ret != (int)msg_sz) {
-		HA_IPC_LOG(ERR, "Failed to send complete msg on fd %d", sockfd);
+		HA_IPC_LOG(ERR, "Failed to send complete msg (sz %d instead of %lu fd %d)",
+			ret, msg_sz, sockfd);
 		return -1;		
 	}
 
@@ -224,7 +225,7 @@ virtio_ha_recv_msg(int sockfd, struct virtio_ha_msg *msg)
 		goto out;
 
 	if (ret != sizeof(*hdr)) {
-		HA_IPC_LOG(ERR, "Unexpected header size read\n");
+		HA_IPC_LOG(ERR, "Unexpected header size read (%d instead of %lu)", ret, sizeof(*hdr));
 		ret = -1;
 		goto out;
 	}
@@ -233,7 +234,7 @@ virtio_ha_recv_msg(int sockfd, struct virtio_ha_msg *msg)
 		msg->iov.iov_len = hdr->size;
 		msg->iov.iov_base = malloc(msg->iov.iov_len);
 		if (msg->iov.iov_base == NULL) {
-			HA_IPC_LOG(ERR, "Failed to alloc message payload when read message");
+			HA_IPC_LOG(ERR, "Failed to alloc message payload (sz %u) when read message", hdr->size);
 			ret = -1;
 			goto out;
 		}
@@ -241,7 +242,8 @@ virtio_ha_recv_msg(int sockfd, struct virtio_ha_msg *msg)
 		if (ret <= 0)
 			goto out;
 		if (ret != (int)msg->iov.iov_len) {
-			HA_IPC_LOG(ERR, "Failed to read complete message payload (fd %d)", sockfd);
+			HA_IPC_LOG(ERR, "Failed to read complete message payload (%d instead of %lu,fd %d)",
+				ret, msg->iov.iov_len, sockfd);
 			ret = -1;
 			goto out;
 		}
@@ -816,8 +818,6 @@ virtio_ha_pf_ctx_query(const struct virtio_dev_name *pf, struct virtio_pf_ctx *c
 	ctx->vfio_group_fd = msg->fds[0];
 	ctx->vfio_device_fd = msg->fds[1];
 
-	virtio_ha_free_msg(msg);
-
 	TAILQ_FOREACH(dev, &client_devs.pf_list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, pf->dev_bdf)) {
 			dev->pf_ctx.vfio_group_fd = msg->fds[0];
@@ -825,6 +825,8 @@ virtio_ha_pf_ctx_query(const struct virtio_dev_name *pf, struct virtio_pf_ctx *c
 			break;
 		}
 	}
+
+	virtio_ha_free_msg(msg);
 
 	return 0;
 }
@@ -836,7 +838,6 @@ virtio_ha_vf_ctx_query(struct virtio_dev_name *vf,
 	struct virtio_ha_pf_dev *dev;
 	struct virtio_ha_vf_dev *vf_dev;
 	struct virtio_ha_vf_dev_list *vf_list;
-	struct virtio_vdpa_dma_mem *mem;
 	struct virtio_ha_msg *msg;
 	bool found = false;
 	int ret;
@@ -875,9 +876,7 @@ virtio_ha_vf_ctx_query(struct virtio_dev_name *vf,
 		return -1;
 	}
 
-	mem = (struct virtio_vdpa_dma_mem *)msg->iov.iov_base;
-	*ctx = malloc(sizeof(struct vdpa_vf_ctx) +
-		sizeof(struct virtio_vdpa_mem_region) * mem->nregions);
+	*ctx = malloc(sizeof(int) * 3 + msg->iov.iov_len);
 	if (*ctx == NULL) {
 		HA_IPC_LOG(ERR, "Failed to alloc vf ctx");
 		return -1;			
@@ -886,10 +885,7 @@ virtio_ha_vf_ctx_query(struct virtio_dev_name *vf,
 	(*ctx)->vfio_container_fd = msg->fds[0];
 	(*ctx)->vfio_group_fd = msg->fds[1];
 	(*ctx)->vfio_device_fd = msg->fds[2];
-	memcpy(&(*ctx)->mem, mem, msg->iov.iov_len);
-	free(msg->iov.iov_base);//TO-DO: should make ctx->mem a pointer?
-
-	virtio_ha_free_msg(msg);
+	memcpy(&(*ctx)->ctt, msg->iov.iov_base, msg->iov.iov_len);
 
 	TAILQ_FOREACH(dev, &client_devs.pf_list, next) {
 		if (!strcmp(dev->pf_name.dev_bdf, pf->dev_bdf)) {
@@ -907,10 +903,13 @@ virtio_ha_vf_ctx_query(struct virtio_dev_name *vf,
 			vf_dev->vf_ctx.vfio_container_fd = msg->fds[0];
 			vf_dev->vf_ctx.vfio_group_fd = msg->fds[1];
 			vf_dev->vf_ctx.vfio_device_fd = msg->fds[2];
-			memcpy(&vf_dev->vf_ctx.mem, &(*ctx)->mem, msg->iov.iov_len);
+			memcpy(&vf_dev->vf_ctx.ctt, msg->iov.iov_base, msg->iov.iov_len);
 			break;
 		}
 	}
+
+	free(msg->iov.iov_base);
+	virtio_ha_free_msg(msg);
 
 	return 0;
 }
@@ -1402,7 +1401,7 @@ virtio_ha_vf_mem_tbl_store(const struct virtio_dev_name *vf,
 		mem->nregions * sizeof(struct virtio_vdpa_mem_region);
 	TAILQ_FOREACH(vf_dev, vf_list, next) {
 		if (!strcmp(vf_dev->vf_devargs.vf_name.dev_bdf, vf->dev_bdf)) {
-			memcpy(&vf_dev->vf_ctx.mem, mem, len);
+			memcpy(&vf_dev->vf_ctx.ctt.mem, mem, len);
 			break;
 		}
 	}
@@ -1439,7 +1438,7 @@ virtio_ha_vf_mem_tbl_remove(struct virtio_dev_name *vf,
 
 	TAILQ_FOREACH(vf_dev, vf_list, next) {
 		if (!strcmp(vf_dev->vf_devargs.vf_name.dev_bdf, vf->dev_bdf)) {
-			mem = &vf_dev->vf_ctx.mem;
+			mem = &vf_dev->vf_ctx.ctt.mem;
 			mem->nregions = 0;
 			break;
 		}
@@ -1570,8 +1569,8 @@ virtio_ha_global_dma_map_no_cache(struct virtio_ha_global_dma_map *map, bool is_
 	}
 
 	msg->hdr.type = is_map ? VIRTIO_HA_GLOBAL_STORE_DMA_MAP : VIRTIO_HA_GLOBAL_REMOVE_DMA_MAP;
-	msg->hdr.size = sizeof(struct virtio_ha_global_dma_entry);
-	msg->iov.iov_len = sizeof(struct virtio_ha_global_dma_entry);
+	msg->hdr.size = sizeof(struct virtio_ha_global_dma_map);
+	msg->iov.iov_len = sizeof(struct virtio_ha_global_dma_map);
 	msg->iov.iov_base = (void *)map;
 	ret = virtio_ha_send_msg(ipc_client_sock, msg);
 	if (ret < 0) {
@@ -1701,9 +1700,9 @@ sync_dev_context_to_ha(ver_time_set set_ver)
 				}
 			}
 
-			if (vf_dev->vf_ctx.mem.nregions != 0) {
+			if (vf_dev->vf_ctx.ctt.mem.nregions != 0) {
 				ret = virtio_ha_vf_mem_tbl_store_no_cache(&vf_dev->vf_devargs.vf_name,
-						&dev->pf_name, &vf_dev->vf_ctx.mem);
+						&dev->pf_name, &vf_dev->vf_ctx.ctt.mem);
 				if (ret) {
 					HA_IPC_LOG(ERR, "Failed to sync vf memory table");
 					continue;
